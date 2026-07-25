@@ -45,7 +45,7 @@ decode row 4864x896:    baseline 0.514 ms, distribuido 5.774 ms, 0.089x
 prefill column, 32:     baseline 1.742 ms, distribuido 2.688 ms, 0.648x
 prefill row, 32:        baseline 4.826 ms, distribuido 6.224 ms, 0.775x
 decode MLP Gloo:        baseline 3.261 ms, distribuido 4.649 ms, 0.702x
-decode MLP TCP:         baseline 3.314 ms, distribuido 3.617 ms, 0.916x
+decode MLP TCP, 2 threads/shard: baseline 3.100 ms, distribuido 1.107 ms, 2.802x
 prefill MLP, 32:         baseline 5.932 ms, distribuido 9.677 ms, 0.613x
 ```
 
@@ -66,15 +66,16 @@ coordenacao, nao os collectives, dominam o tempo.
 ## Collective TCP Para Dois Nos
 
 `--collective tcp` substitui o all-reduce Gloo do MLP por uma conexao persistente
-com protocolo binario: rank 1 envia seu parcial, rank 0 soma e devolve o hidden
-final. Setup, distribuicao inicial de pesos e barreiras continuam usando Gloo e
-ficam fora do caminho steady-state medido.
+com protocolo binario. Os dois ranks enviam seus parciais simultaneamente,
+recebem o parcial remoto e somam localmente. Isso evita o ping-pong serial de uma
+ida e volta completa. Setup, distribuicao inicial de pesos e barreiras continuam
+usando Gloo e ficam fora do caminho steady-state medido.
 
 ```bash
 uv run python -m experiments.tensor_parallel.benchmark \
   --nodes 2 --tokens 1 \
   --input-features 896 --output-features 4864 \
-  --mode mlp --collective tcp
+  --mode mlp --collective tcp --worker-threads 2
 ```
 
 Aumentar artificialmente o pacote nao reduz a latencia. Para amortiza-la com
@@ -105,7 +106,7 @@ uv run python -m experiments.tensor_parallel.benchmark \
   --master-addr 192.168.0.8 --master-port 29500 --interface wlan0 \
   --collective tcp --collective-port 29501 \
   --tokens 1 --input-features 896 --output-features 4864 \
-  --iterations 50 --warmup 5 --threads 14 --mode mlp
+  --iterations 50 --warmup 5 --threads 14 --worker-threads 2 --mode mlp
 ```
 
 Remoto `192.168.0.11`:
@@ -116,7 +117,7 @@ uv run python -m experiments.tensor_parallel.benchmark \
   --master-addr 192.168.0.8 --master-port 29500 --interface enp37s0 \
   --collective tcp --collective-port 29501 \
   --tokens 1 --input-features 896 --output-features 4864 \
-  --iterations 50 --warmup 5 --threads "$(nproc)" --mode mlp
+  --iterations 50 --warmup 5 --threads "$(nproc)" --worker-threads 2 --mode mlp
 ```
 
 Iniciar rank 0 primeiro e rank 1 em seguida. Se a interface do remoto mudar,

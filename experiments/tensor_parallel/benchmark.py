@@ -47,6 +47,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--threads", type=int, default=os.cpu_count() or 1)
+    parser.add_argument("--worker-threads", type=int, default=None)
     parser.add_argument("--dtype", choices=["float32", "bfloat16"], default="float32")
     parser.add_argument("--mode", choices=["column", "row", "mlp", "both", "all"],
                         default="mlp")
@@ -68,7 +69,10 @@ def _config(args: argparse.Namespace, local_spawn: bool) -> BenchmarkConfig:
         raise ValueError(f"nodes={args.nodes}; esperado pelo menos 2")
     if args.collective == "tcp" and args.nodes != 2:
         raise ValueError(f"nodes={args.nodes}; collective tcp espera exatamente 2")
-    worker_threads = max(1, args.threads // args.nodes) if local_spawn else args.threads
+    default_threads = max(1, args.threads // args.nodes) if local_spawn else args.threads
+    worker_threads = args.worker_threads or default_threads
+    if worker_threads < 1:
+        raise ValueError(f"worker_threads={worker_threads}; esperado pelo menos 1")
     return BenchmarkConfig(args.nodes, args.tokens, args.input_features,
                            args.output_features, args.iterations, args.warmup,
                            args.threads, worker_threads, dtype, modes,
@@ -267,36 +271,29 @@ def _scatter_mlp_weight(weight: torch.Tensor, local_weight: torch.Tensor,
     dist.scatter(local_weight, scatter_list=shards, src=0)
 
 
-def _tcp_all_reduce(partial: torch.Tensor, rank: int,
-                    connection: socket.socket,
+def _tcp_all_reduce(partial: torch.Tensor, connection: socket.socket,
                     traffic: NetworkStats | None) -> torch.Tensor:
-    if rank == 0:
-        remote, _ = _recv(connection, "cpu", traffic)
-        partial.add_(remote)
-        _send(connection, partial, traffic)
-        return partial
     _send(connection, partial, traffic)
-    result, _ = _recv(connection, "cpu", traffic)
-    return result
+    remote, _ = _recv(connection, "cpu", traffic)
+    partial.add_(remote)
+    return partial
 
 
-def _reduce_partial(partial: torch.Tensor, rank: int,
-                    connection: socket.socket | None,
+def _reduce_partial(partial: torch.Tensor, connection: socket.socket | None,
                     traffic: NetworkStats | None) -> torch.Tensor:
     if connection is not None:
-        return _tcp_all_reduce(partial, rank, connection, traffic)
+        return _tcp_all_reduce(partial, connection, traffic)
     dist.all_reduce(partial, op=dist.ReduceOp.SUM)
     return partial
 
 
 def _mlp_step(inputs: torch.Tensor, gate: torch.Tensor, up: torch.Tensor,
-              down: torch.Tensor, rank: int,
-              connection: socket.socket | None,
+              down: torch.Tensor, connection: socket.socket | None,
               traffic: NetworkStats | None = None) -> tuple[torch.Tensor, float]:
     start = time.perf_counter()
     partial = _full_mlp(inputs, gate, up, down)
     compute = time.perf_counter() - start
-    return _reduce_partial(partial, rank, connection, traffic), compute
+    return _reduce_partial(partial, connection, traffic), compute
 
 
 def _aggregate_sent(traffic: NetworkStats | None, rank: int) -> tuple[int, int]:
@@ -324,12 +321,12 @@ def _mlp_benchmark(config: BenchmarkConfig, rank: int,
     ) if rank == 0 else (None, 0.0)
     torch.set_num_threads(config.worker_threads)
     for _ in range(config.warmup):
-        _mlp_step(inputs, local_gate, local_up, local_down, rank, connection)
+        _mlp_step(inputs, local_gate, local_up, local_down, connection)
     traffic = NetworkStats() if connection is not None else None
     dist.barrier(); start = time.perf_counter(); compute = 0.0; actual = inputs
     for _ in range(config.iterations):
         actual, seconds = _mlp_step(
-            inputs, local_gate, local_up, local_down, rank, connection, traffic
+            inputs, local_gate, local_up, local_down, connection, traffic
         )
         compute += seconds
     dist.barrier(); distributed = (time.perf_counter() - start) / config.iterations
