@@ -42,6 +42,34 @@ uv run python -m experiments.tensor_parallel.benchmark \
 
 ## O Que `--tokens` Significa
 
+> [!IMPORTANT]
+> **Nao existe exatamente um "super token".** O token continua sendo um ID, mas
+> em um modelo maior ele e representado por um vetor muito maior e passa por
+> matrizes muito maiores.
+
+### Modelo Atual
+
+No Qwen2.5-0.5B usado como referencia:
+
+```text
+hidden_size = 896
+intermediate_size = 4864
+```
+
+Um token entra no MLP como:
+
+```text
+[1, 896]
+```
+
+As tres multiplicacoes custam:
+
+```text
+gate: 896 × 4864
+up:   896 × 4864
+down: 4864 × 896
+```
+
 `--tokens 128` cria uma entrada com 128 vetores de tokens processados ao mesmo
 tempo:
 
