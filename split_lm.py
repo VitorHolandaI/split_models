@@ -147,10 +147,27 @@ def _connect(addr, label, attempts=120):
     raise ConnectionError(f"falha conectando {label} em {addr}: {last}")
 
 
+def _probe(addr, label, timeout=3):
+    try:
+        s = socket.create_connection(addr, timeout=timeout)
+        s.close()
+    except OSError as exc:
+        raise ConnectionError(f"probe falhou {label} em {addr}: {exc}") from exc
+
+
 def _send_stop(controls):
     for control in controls.values():
         try: _send_msg(control, {"type": "STOP", "node": "head"})
         except OSError: pass
+
+
+def _recv_token(srv_tok, tok, device):
+    while True:
+        try:
+            return _recv(tok, device), tok
+        except Exception:
+            tok.close()
+            tok = srv_tok.accept()[0]
 
 
 def _forward(model, hidden, dev, is_head, is_last, input_ids=None):
@@ -182,7 +199,7 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
                      args=(control_port, ready, errors, controls, lock), daemon=True).start()
 
     srv_tok = socket.socket(); srv_tok.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv_tok.bind(("0.0.0.0", token_port)); srv_tok.listen(1)
+    srv_tok.bind(("0.0.0.0", token_port)); srv_tok.listen(8)
     log.info("HEAD aguardando token em :%d...", token_port)
 
     _wait_ready(worker_count, ready, errors, lock, ready_timeout)
@@ -203,7 +220,8 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
             for step in range(max_new):
                 _send(conn, ids)
                 if errors: raise RuntimeError(errors[-1])
-                nid = _recv(tok, device).item()
+                token, tok = _recv_token(srv_tok, tok, device)
+                nid = token.item()
                 if nid == tokenizer.eos_token_id: break
                 _stream_token(tokenizer, nid)
                 ids = torch.cat([ids, torch.tensor([[nid]], device=device)], dim=1)
@@ -216,7 +234,8 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
         for step in range(max_new):
             _send(conn, ids)
             if errors: raise RuntimeError(errors[-1])
-            nid = _recv(tok, device).item()
+            token, tok = _recv_token(srv_tok, tok, device)
+            nid = token.item()
             if nid == tokenizer.eos_token_id: break
             _stream_token(tokenizer, nid)
             ids = torch.cat([ids, torch.tensor([[nid]], device=device)], dim=1)
@@ -241,10 +260,14 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
     """Worker: escuta upstream, conecta no downstream, manda token pro head."""
     is_first = layer_start == 0
     is_last = layer_end == n_total
+    log.info("WORKER %s testando head control %s", node_id, control_to)
     control = _connect(control_to, "head control")
     try:
         if fake_error == "startup":
             raise RuntimeError(f"erro fake de startup em {node_id}")
+        if token_back_to:
+            log.info("WORKER %s testando token-back %s", node_id, token_back_to)
+            _probe(token_back_to, "head token-back")
         model = _build(model_name, layer_start, layer_end, n_total, device)
         log.info("WORKER %s layers %d..%d (%d params)", node_id, layer_start,
                  layer_end - 1, sum(p.numel() for p in model.parameters()))
@@ -273,7 +296,9 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
         raise
 
     try:
-        for step in range(max_new):
+        step = 0
+        while True:
+            step += 1
             if fake_error == "run":
                 raise RuntimeError(f"erro fake de run em {node_id}")
             if is_first:
@@ -286,11 +311,15 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
             if is_last:
                 nid = h[0, -1].argmax()
                 _send(token_back, nid.unsqueeze(0))
-                log.info("WORKER %s: step %d token %d", node_id, step + 1, nid.item())
-                if nid.item() == tokenizer.eos_token_id: break
+                log.info("WORKER %s: step %d token %d", node_id, step, nid.item())
             else:
                 _send(downstream, h)
-                log.info("WORKER %s: step %d encaminhado", node_id, step + 1)
+                log.info("WORKER %s: step %d encaminhado", node_id, step)
+    except ConnectionError as exc:
+        if str(exc) != "fechou":
+            _send_error(control, node_id, "run", exc)
+            raise
+        log.info("WORKER %s: upstream fechou", node_id)
     except Exception as exc:
         _send_error(control, node_id, "run", exc)
         raise
@@ -305,7 +334,7 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
 
 def main():
     ap = argparse.ArgumentParser(description="split LLM")
-    ap.add_argument("role", choices=["head", "worker"])
+    ap.add_argument("role", choices=["head", "worker", "probe"])
     ap.add_argument("--model", default="Qwen/Qwen2.5-0.5B")
     ap.add_argument("--layer-start", type=int, default=None)
     ap.add_argument("--layer-end", type=int, default=None)
@@ -318,12 +347,26 @@ def main():
     ap.add_argument("--ready-timeout", type=float, default=120, help="head: segundos esperando READY")
     ap.add_argument("--fake-error", choices=["startup", "run"], default=None, help="worker: injeta erro para testar controle")
     ap.add_argument("--connect", default=None, help="head: addr:port do primeiro worker | worker: addr:port do proximo")
+    ap.add_argument("--probe-to", action="append", default=[], help="probe: addr:port para testar")
     ap.add_argument("--token-back-to", default=None, help="worker: addr:port do head pra token (ultimo worker)")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--max-new-tokens", type=int, default=20)
     ap.add_argument("--interactive", action="store_true")
     ap.add_argument("--verbose", action="store_true", help="mostra logs INFO tambem no head")
     args = ap.parse_args()
+
+    def _parse(s):
+        if not s: return None
+        p = s.split(":"); return (p[0], int(p[1]))
+
+    if args.role == "probe":
+        if not args.probe_to:
+            print("probe precisa de --probe-to addr:port")
+            return
+        for target in args.probe_to:
+            _probe(_parse(target), target)
+            print(f"OK {target}")
+        return
 
     if args.role == "head" and not args.verbose:
         logging.getLogger().setLevel(logging.WARNING)
@@ -337,10 +380,6 @@ def main():
 
     cfg = AutoConfig.from_pretrained(args.model)
     n_total = args.total_layers or cfg.num_hidden_layers
-
-    def _parse(s):
-        if not s: return None
-        p = s.split(":"); return (p[0], int(p[1]))
 
     if args.role == "head":
         if not args.connect:
