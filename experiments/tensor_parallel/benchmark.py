@@ -34,6 +34,7 @@ class BenchmarkConfig:
     baseline_threads: int
     worker_threads: int
     dtype: torch.dtype
+    wire_dtype: torch.dtype | None
     modes: tuple[str, ...]
     collective: str
 
@@ -49,6 +50,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--threads", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--worker-threads", type=int, default=None)
     parser.add_argument("--dtype", choices=["float32", "bfloat16"], default="float32")
+    parser.add_argument("--wire-dtype", choices=["same", "bfloat16", "float16"],
+                        default="same")
     parser.add_argument("--mode", choices=["column", "row", "mlp", "both", "all"],
                         default="mlp")
     parser.add_argument("--rank", type=int, default=None)
@@ -65,17 +68,24 @@ def _config(args: argparse.Namespace, local_spawn: bool) -> BenchmarkConfig:
     if args.mode == "all":
         modes = ("column", "row", "mlp")
     dtype = torch.float32 if args.dtype == "float32" else torch.bfloat16
+    wire_dtype = {
+        "same": None,
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+    }[args.wire_dtype]
     if args.nodes < 2:
         raise ValueError(f"nodes={args.nodes}; esperado pelo menos 2")
     if args.collective == "tcp" and args.nodes != 2:
         raise ValueError(f"nodes={args.nodes}; collective tcp espera exatamente 2")
+    if wire_dtype is not None and args.collective != "tcp":
+        raise ValueError(f"wire_dtype={args.wire_dtype!r}; esperado collective tcp")
     default_threads = max(1, args.threads // args.nodes) if local_spawn else args.threads
     worker_threads = args.worker_threads or default_threads
     if worker_threads < 1:
         raise ValueError(f"worker_threads={worker_threads}; esperado pelo menos 1")
     return BenchmarkConfig(args.nodes, args.tokens, args.input_features,
                            args.output_features, args.iterations, args.warmup,
-                           args.threads, worker_threads, dtype, modes,
+                           args.threads, worker_threads, dtype, wire_dtype, modes,
                            args.collective)
 
 
@@ -272,28 +282,36 @@ def _scatter_mlp_weight(weight: torch.Tensor, local_weight: torch.Tensor,
 
 
 def _tcp_all_reduce(partial: torch.Tensor, connection: socket.socket,
-                    traffic: NetworkStats | None) -> torch.Tensor:
-    _send(connection, partial, traffic)
+                    traffic: NetworkStats | None,
+                    wire_dtype: torch.dtype | None = None) -> torch.Tensor:
+    wire_partial = partial if wire_dtype is None else partial.to(wire_dtype)
+    _send(connection, wire_partial, traffic)
     remote, _ = _recv(connection, "cpu", traffic)
-    partial.add_(remote)
-    return partial
+    if wire_dtype is None:
+        partial.add_(remote)
+        return partial
+    result = wire_partial.to(partial.dtype)
+    result.add_(remote.to(partial.dtype))
+    return result
 
 
 def _reduce_partial(partial: torch.Tensor, connection: socket.socket | None,
-                    traffic: NetworkStats | None) -> torch.Tensor:
+                    traffic: NetworkStats | None,
+                    wire_dtype: torch.dtype | None) -> torch.Tensor:
     if connection is not None:
-        return _tcp_all_reduce(partial, connection, traffic)
+        return _tcp_all_reduce(partial, connection, traffic, wire_dtype)
     dist.all_reduce(partial, op=dist.ReduceOp.SUM)
     return partial
 
 
 def _mlp_step(inputs: torch.Tensor, gate: torch.Tensor, up: torch.Tensor,
               down: torch.Tensor, connection: socket.socket | None,
-              traffic: NetworkStats | None = None) -> tuple[torch.Tensor, float]:
+              traffic: NetworkStats | None = None,
+              wire_dtype: torch.dtype | None = None) -> tuple[torch.Tensor, float]:
     start = time.perf_counter()
     partial = _full_mlp(inputs, gate, up, down)
     compute = time.perf_counter() - start
-    return _reduce_partial(partial, connection, traffic), compute
+    return _reduce_partial(partial, connection, traffic, wire_dtype), compute
 
 
 def _aggregate_sent(traffic: NetworkStats | None, rank: int) -> tuple[int, int]:
@@ -321,12 +339,14 @@ def _mlp_benchmark(config: BenchmarkConfig, rank: int,
     ) if rank == 0 else (None, 0.0)
     torch.set_num_threads(config.worker_threads)
     for _ in range(config.warmup):
-        _mlp_step(inputs, local_gate, local_up, local_down, connection)
+        _mlp_step(inputs, local_gate, local_up, local_down, connection,
+                  wire_dtype=config.wire_dtype)
     traffic = NetworkStats() if connection is not None else None
     dist.barrier(); start = time.perf_counter(); compute = 0.0; actual = inputs
     for _ in range(config.iterations):
         actual, seconds = _mlp_step(
-            inputs, local_gate, local_up, local_down, connection, traffic
+            inputs, local_gate, local_up, local_down, connection, traffic,
+            config.wire_dtype
         )
         compute += seconds
     dist.barrier(); distributed = (time.perf_counter() - start) / config.iterations
@@ -334,8 +354,10 @@ def _mlp_benchmark(config: BenchmarkConfig, rank: int,
     sent_frames, sent_bytes = _aggregate_sent(traffic, rank)
     if rank == 0 and baseline is not None:
         error, relative_error = _errors(actual, baseline)
+        wire_type = config.wire_dtype or actual.dtype
+        wire_size = torch.empty((), dtype=wire_type).element_size()
         network = _mlp_minimum_network_bytes(
-            config.tokens, config.input_features, actual.element_size(), config.nodes
+            config.tokens, config.input_features, wire_size, config.nodes
         )
         _report(f"mlp-{config.collective}", baseline_seconds, distributed,
                 max_compute, error,
@@ -400,6 +422,7 @@ def _print_config(config: BenchmarkConfig, rank: int | None) -> None:
         f"matrix={config.input_features}x{config.output_features} "
         f"baseline_threads={config.baseline_threads} "
         f"worker_threads={config.worker_threads} dtype={config.dtype} "
+        f"wire_dtype={config.wire_dtype or config.dtype} "
         f"collective={config.collective}"
     )
 

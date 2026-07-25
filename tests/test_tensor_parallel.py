@@ -13,6 +13,26 @@ from experiments.tensor_parallel.benchmark import (
 from experiments.tensor_parallel.ops import column_parallel, mlp_parallel, row_parallel
 
 
+def _exchange_tcp_partials(
+    left_value: float, right_value: float, wire_dtype: torch.dtype | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    left, right = socket.socketpair()
+    remote_result: list[torch.Tensor] = []
+    remote = threading.Thread(target=lambda: remote_result.append(
+        _tcp_all_reduce(torch.tensor([right_value]), right, None, wire_dtype)
+    ))
+    try:
+        remote.start()
+        local = _tcp_all_reduce(torch.tensor([left_value]), left, None, wire_dtype)
+        remote.join(timeout=2)
+    finally:
+        left.close()
+        right.close()
+    if remote.is_alive() or not remote_result:
+        raise TimeoutError("collective TCP não terminou em 2s; esperado resultado nos dois ranks")
+    return local, remote_result[0]
+
+
 class TensorParallelTest(unittest.TestCase):
     def test_column_parallel_matches_full_matmul(self):
         inputs = torch.arange(8, dtype=torch.float32).reshape(2, 4)
@@ -77,25 +97,30 @@ class TensorParallelTest(unittest.TestCase):
 
         self.assertEqual(config.collective, "tcp")
 
-    def test_tcp_collective_returns_sum_to_both_ranks(self):
-        left, right = socket.socketpair()
-        remote_result: list[torch.Tensor] = []
-        remote = threading.Thread(
-            target=lambda: remote_result.append(
-                _tcp_all_reduce(torch.tensor([2.0]), right, None)
-            )
-        )
-        try:
-            remote.start()
-            local_result = _tcp_all_reduce(torch.tensor([1.0]), left, None)
-            remote.join(timeout=2)
-        finally:
-            left.close()
-            right.close()
+    def test_wire_dtype_does_not_change_compute_dtype(self):
+        args = _parse_args([
+            "--collective", "tcp", "--dtype", "float32",
+            "--wire-dtype", "bfloat16",
+        ])
 
-        self.assertFalse(remote.is_alive())
+        config = _config(args, local_spawn=True)
+
+        self.assertEqual(config.dtype, torch.float32)
+        self.assertEqual(config.wire_dtype, torch.bfloat16)
+
+    def test_tcp_collective_returns_sum_to_both_ranks(self):
+        local_result, remote_result = _exchange_tcp_partials(1.0, 2.0)
+
         self.assertEqual(local_result.item(), 3.0)
-        self.assertEqual(remote_result[0].item(), 3.0)
+        self.assertEqual(remote_result.item(), 3.0)
+
+    def test_bfloat16_wire_returns_identical_float32_results(self):
+        local_result, remote_result = _exchange_tcp_partials(
+            1.12345, 2.23456, torch.bfloat16
+        )
+
+        self.assertEqual(local_result.dtype, torch.float32)
+        self.assertTrue(torch.equal(local_result, remote_result))
 
 
 if __name__ == "__main__":

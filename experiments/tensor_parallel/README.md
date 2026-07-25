@@ -47,6 +47,7 @@ prefill row, 32:        baseline 4.826 ms, distribuido 6.224 ms, 0.775x
 decode MLP Gloo:        baseline 3.261 ms, distribuido 4.649 ms, 0.702x
 decode MLP TCP, 2 threads/shard: baseline 3.100 ms, distribuido 1.107 ms, 2.802x
 prefill MLP, 32:         baseline 5.932 ms, distribuido 9.677 ms, 0.613x
+prefill FP32/BF16 wire:  baseline 9.716 ms, distribuido 4.026 ms, 2.413x
 ```
 
 O resultado local e mais lento porque os processos dividem os mesmos cores e a
@@ -81,6 +82,15 @@ uv run python -m experiments.tensor_parallel.benchmark \
 Aumentar artificialmente o pacote nao reduz a latencia. Para amortiza-la com
 trabalho real, usar prefill (`--tokens 32`) ou batch de varias sequencias.
 
+`--wire-dtype bfloat16` mantem as multiplicacoes em FP32 e converte apenas o
+tensor enviado. Isso reduz os bytes pela metade, mas e uma compressao com perda.
+Na medicao de 32 tokens, o erro relativo foi aproximadamente 0.2%. A integracao
+com o modelo real precisa comparar tokens e qualidade antes de habilitar isso.
+
+```bash
+--dtype float32 --wire-dtype bfloat16
+```
+
 O relatorio separa calculo de comunicacao:
 
 ```text
@@ -106,7 +116,8 @@ uv run python -m experiments.tensor_parallel.benchmark \
   --master-addr 192.168.0.8 --master-port 29500 --interface wlan0 \
   --collective tcp --collective-port 29501 \
   --tokens 1 --input-features 896 --output-features 4864 \
-  --iterations 50 --warmup 5 --threads 14 --worker-threads 2 --mode mlp
+  --iterations 50 --warmup 5 --threads 14 --worker-threads 2 \
+  --dtype float32 --wire-dtype bfloat16 --mode mlp
 ```
 
 Remoto `192.168.0.11`:
@@ -117,7 +128,8 @@ uv run python -m experiments.tensor_parallel.benchmark \
   --master-addr 192.168.0.8 --master-port 29500 --interface enp37s0 \
   --collective tcp --collective-port 29501 \
   --tokens 1 --input-features 896 --output-features 4864 \
-  --iterations 50 --warmup 5 --threads "$(nproc)" --worker-threads 2 --mode mlp
+  --iterations 50 --warmup 5 --threads "$(nproc)" --worker-threads 2 \
+  --dtype float32 --wire-dtype bfloat16 --mode mlp
 ```
 
 Iniciar rank 0 primeiro e rank 1 em seguida. Se a interface do remoto mudar,
