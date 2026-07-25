@@ -92,8 +92,8 @@ def _build(model_name, layer_start, layer_end, n_total, device):
     return model
 
 
-def _causal_mask(seq_len, dev):
-    m = torch.full((seq_len, seq_len), float("-inf"), device=dev)
+def _causal_mask(seq_len, dev, dtype):
+    m = torch.full((seq_len, seq_len), float("-inf"), device=dev, dtype=dtype)
     return torch.triu(m, diagonal=1).unsqueeze(0).unsqueeze(0)
 
 
@@ -218,7 +218,7 @@ def _forward(model, hidden, dev, is_head, is_last, input_ids=None):
         pos = torch.arange(seq_len, device=dev).unsqueeze(0)
         cos, sin = model.model.rotary_emb(hidden, pos)
         pe = (cos, sin)
-        mask = _causal_mask(seq_len, dev)
+        mask = _causal_mask(seq_len, dev, hidden.dtype)
         for layer in model.model.layers:
             hidden = layer(hidden, position_embeddings=pe, attention_mask=mask)
         if is_last:
