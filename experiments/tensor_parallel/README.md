@@ -44,7 +44,8 @@ decode column 896x4864: baseline 0.365 ms, distribuido 1.710 ms, 0.213x
 decode row 4864x896:    baseline 0.514 ms, distribuido 5.774 ms, 0.089x
 prefill column, 32:     baseline 1.742 ms, distribuido 2.688 ms, 0.648x
 prefill row, 32:        baseline 4.826 ms, distribuido 6.224 ms, 0.775x
-decode MLP steady-state: baseline 3.550 ms, distribuido 4.050 ms, 0.876x
+decode MLP Gloo:        baseline 3.261 ms, distribuido 4.649 ms, 0.702x
+decode MLP TCP:         baseline 3.314 ms, distribuido 3.617 ms, 0.916x
 prefill MLP, 32:         baseline 5.932 ms, distribuido 9.677 ms, 0.613x
 ```
 
@@ -62,6 +63,35 @@ Para superar este kernel, a implementacao Rust tambem precisaria usar MKL ou
 oneDNN. Um worker Rust so se justifica se o profiling mostrar que transporte e
 coordenacao, nao os collectives, dominam o tempo.
 
+## Collective TCP Para Dois Nos
+
+`--collective tcp` substitui o all-reduce Gloo do MLP por uma conexao persistente
+com protocolo binario: rank 1 envia seu parcial, rank 0 soma e devolve o hidden
+final. Setup, distribuicao inicial de pesos e barreiras continuam usando Gloo e
+ficam fora do caminho steady-state medido.
+
+```bash
+uv run python -m experiments.tensor_parallel.benchmark \
+  --nodes 2 --tokens 1 \
+  --input-features 896 --output-features 4864 \
+  --mode mlp --collective tcp
+```
+
+Aumentar artificialmente o pacote nao reduz a latencia. Para amortiza-la com
+trabalho real, usar prefill (`--tokens 32`) ou batch de varias sequencias.
+
+O relatorio separa calculo de comunicacao:
+
+```text
+matmuls_per_rank=3       gate, up e down por iteracao
+collective_calls=50      um reduce por iteracao medida
+sent_frames=100          dois frames TCP por reduce em dois ranks
+sent_bytes=...           soma real dos frames, excluindo warmup
+```
+
+Gloo nao expoe sua fragmentacao TCP interna; nesse modo, frames e bytes aparecem
+como `gloo-managed` e `min_network` continua sendo o limite teorico do tensor.
+
 ## Duas Maquinas Fisicas
 
 As duas maquinas precisam usar os mesmos argumentos de modelo matematico. O
@@ -73,6 +103,7 @@ Head `192.168.0.8` (`wlan0`):
 uv run python -m experiments.tensor_parallel.benchmark \
   --nodes 2 --rank 0 \
   --master-addr 192.168.0.8 --master-port 29500 --interface wlan0 \
+  --collective tcp --collective-port 29501 \
   --tokens 1 --input-features 896 --output-features 4864 \
   --iterations 50 --warmup 5 --threads 14 --mode mlp
 ```
@@ -83,6 +114,7 @@ Remoto `192.168.0.11`:
 uv run python -m experiments.tensor_parallel.benchmark \
   --nodes 2 --rank 1 \
   --master-addr 192.168.0.8 --master-port 29500 --interface enp37s0 \
+  --collective tcp --collective-port 29501 \
   --tokens 1 --input-features 896 --output-features 4864 \
   --iterations 50 --warmup 5 --threads "$(nproc)" --mode mlp
 ```

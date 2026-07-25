@@ -56,6 +56,13 @@ class TensorParallelTest(unittest.TestCase):
 
         self.assertEqual(network_bytes, 7_168)
 
+    def test_tcp_collective_can_be_selected(self):
+        args = _parse_args(["--collective", "tcp"])
+
+        config = _config(args, local_spawn=True)
+
+        self.assertEqual(config.collective, "tcp")
+
 
 if __name__ == "__main__":
     unittest.main()
