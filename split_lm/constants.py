@@ -1,0 +1,1 @@
+SUPPORTED_MODEL_TYPES = {"qwen2", "llama"}

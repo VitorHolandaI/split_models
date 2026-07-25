@@ -93,6 +93,8 @@ sem Triton quando nao for exigido pelo backend.
 
 Venv CPU-only medida em `/tmp/opencode/split-cpu-venv`: 893 MB.
 
+Venv CPU-only atual do projeto, medida em julho de 2026: 947 MB.
+
 Principais blocos CPU-only:
 
 ```text
@@ -104,6 +106,60 @@ Principais blocos CPU-only:
 12M   hf_xet
 9.9M  tokenizers
 ```
+
+## Aplicacao Standalone Sem Modelo
+
+O modelo nao precisa ser embutido no executavel. A aplicacao pode manter o
+comportamento atual: baixar config, tokenizer e shards pelo Hugging Face Hub na
+primeira execucao e reutilizar `~/.cache/huggingface` nas seguintes.
+
+Medicao atual:
+
+```text
+codigo split_lm + tools + docs:  aproximadamente 212 KiB
+venv CPU-only completo:          aproximadamente 947 MiB
+torch CPU:                       aproximadamente 718 MiB
+transformers:                    aproximadamente 55 MiB
+```
+
+Estimativa de distribuicao standalone, sem pesos de modelo:
+
+```text
+diretorio standalone: 850 MiB a 1.1 GiB
+arquivo compactado:   400 MiB a 650 MiB
+```
+
+O tamanho e dominado pelo runtime Python, PyTorch CPU e bibliotecas nativas. A
+compilacao do codigo Python nao transforma PyTorch em uma dependencia pequena.
+
+Depois do primeiro uso, o consumo de disco e a soma do runtime com o cache do
+modelo. Tamanhos medidos no cache local:
+
+```text
+Qwen/Qwen2.5-0.5B:          999.6 MiB
+Qwen/Qwen2.5-3B-Instruct:     6.2 GiB
+Qwen/Qwen2.5-7B-Instruct:    11.7 GiB
+```
+
+Exemplo com Qwen2.5-0.5B:
+
+```text
+runtime standalone: aproximadamente 950 MiB
+modelo no cache:    aproximadamente 1.0 GiB
+disco total:        aproximadamente 2.0 GiB
+```
+
+Modelos com um unico `model.safetensors`, como Qwen2.5-0.5B, exigem que cada
+maquina baixe o arquivo completo. Em modelos sharded, cada no baixa os arquivos
+que contem seu intervalo de layers; um shard ainda pode conter pesos extras.
+
+Preferir Nuitka standalone, diretorio portatil, SquashFS ou imagem de container.
+Evitar `PyInstaller --onefile`: ele compacta a distribuicao em um arquivo, mas
+precisa extrair quase todo o runtime antes de iniciar. Manter os modelos fora do
+binario tambem permite trocar o modelo sem reconstruir a aplicacao.
+
+Tamanho em disco nao equivale a RSS. Pesos carregados, dtype, KV cache, buffers
+temporarios e numero de processos determinam a RAM usada durante a inferencia.
 
 ## Orcamento Por Host
 
@@ -178,3 +234,27 @@ dtype dos parametros. O pico medido confirma FP32.
 Conclusao: Qwen2.5-0.5B CPU-only cabe com folga em host de 8 GB mesmo com um
 worker carregando todas as layers. Modelos maiores ainda precisam medicao por
 range de layers.
+
+## Simulacao Local De N Nos
+
+O benchmark local cria um processo head e `N-1` workers, divide as camadas em
+intervalos contiguos e habilita profiling em todos os processos:
+
+```bash
+uv run python tools/benchmark_local_cluster.py --nodes 3 --max-new-tokens 10
+```
+
+Antes de iniciar, ele estima os pesos de attention, MLP, embeddings e `lm_head`
+e compara o total com `MemAvailable`. Por padrao, a execucao e recusada quando
+a estimativa mais o overhead dos processos excede 80% da RAM disponivel.
+
+```bash
+uv run python tools/benchmark_local_cluster.py \
+  --model Qwen/Qwen2.5-0.5B \
+  --nodes 4 \
+  --ram-fraction 0.75
+```
+
+Os processos usam loopback e compartilham CPU e largura de memoria. O teste
+valida topologia, protocolo, consumo e overhead local; nao representa o ganho
+de maquinas fisicas independentes.

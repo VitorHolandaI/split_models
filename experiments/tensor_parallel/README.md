@@ -1,0 +1,64 @@
+# Tensor Parallel Experiment
+
+Este experimento mede se dividir as multiplicacoes de matrizes compensa o custo
+de comunicacao antes de alterar o backend do LLM.
+
+## Operacoes
+
+- column parallel: divide as colunas de `QKV`, `gate` e `up`; cada no calcula
+  parte da saida e os resultados sao concatenados;
+- row parallel: divide a dimensao de entrada de `o_proj` e `down`; cada no
+  calcula uma contribuicao e as saidas passam por `all_reduce`.
+- MLP sharded: mantem `gate/up` divididos ate o `down`, sem gather/scatter do
+  tensor intermediario; somente a saida hidden passa por `all_reduce`.
+
+PyTorch usa Intel MKL, oneDNN e AVX2 para o matmul. Gloo executa os collectives
+em C++, portanto o GIL do Python nao participa do caminho medido.
+
+## Uso
+
+Decode equivalente ao `up_proj` do Qwen2.5-0.5B:
+
+```bash
+uv run python -m experiments.tensor_parallel.benchmark \
+  --nodes 2 --tokens 1 \
+  --input-features 896 --output-features 4864 \
+  --mode column
+```
+
+Prefill com 32 tokens:
+
+```bash
+uv run python -m experiments.tensor_parallel.benchmark \
+  --nodes 2 --tokens 32 \
+  --input-features 896 --output-features 4864 \
+  --mode mlp
+```
+
+## Medicoes Locais
+
+Core Ultra 5 225H, FP32, 14 threads totais divididas entre dois processos:
+
+```text
+decode column 896x4864: baseline 0.365 ms, distribuido 1.710 ms, 0.213x
+decode row 4864x896:    baseline 0.514 ms, distribuido 5.774 ms, 0.089x
+prefill column, 32:     baseline 1.742 ms, distribuido 2.688 ms, 0.648x
+prefill row, 32:        baseline 4.826 ms, distribuido 6.224 ms, 0.775x
+decode MLP completo:    baseline 7.287 ms, distribuido 14.897 ms, 0.489x
+prefill MLP, 32:        baseline 5.780 ms, distribuido 13.169 ms, 0.439x
+```
+
+O resultado local e mais lento porque os processos dividem os mesmos cores e a
+mesma largura de memoria. Em maquinas fisicas, cada no adiciona compute, mas a
+rede precisa superar o custo de broadcast, gather e all-reduce por camada.
+
+O MLP completo reduziu o trafego teorico minimo de decode de aproximadamente
+30 KB para 10.5 KB por camada ao eliminar gather/scatter intermediario. Mesmo
+assim, dois processos locais continuaram mais lentos porque dividem os mesmos
+cores. O proximo teste de velocidade precisa usar duas maquinas fisicas, dando
+compute independente a cada shard, e comparar Ethernet contra Wi-Fi.
+
+Rust pode reduzir overhead de transporte, mas nao acelera o matmul por si so.
+Para superar este kernel, a implementacao Rust tambem precisaria usar MKL ou
+oneDNN. Um worker Rust so se justifica se o profiling mostrar que transporte e
+coordenacao, nao os collectives, dominam o tempo.

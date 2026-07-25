@@ -803,7 +803,7 @@ wheels = [
 [[package]]
 name = "split-models"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "safetensors" },

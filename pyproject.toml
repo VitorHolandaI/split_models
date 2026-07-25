@@ -9,6 +9,12 @@ dependencies = [
   "huggingface-hub>=0.23",
 ]
 
+[tool.uv]
+package = true
+
+[project.scripts]
+split-lm = "split_lm.cli:main"
+
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
 
@@ -16,3 +22,8 @@ torch = [{ index = "pytorch-cpu" }]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
