@@ -2,6 +2,7 @@ import unittest
 
 import torch
 
+from experiments.tensor_parallel.benchmark import _config, _parse_args
 from experiments.tensor_parallel.ops import column_parallel, mlp_parallel, row_parallel
 
 
@@ -33,6 +34,16 @@ class TensorParallelTest(unittest.TestCase):
         actual = mlp_parallel(inputs, gate, up, down, shards=2)
 
         torch.testing.assert_close(actual, expected)
+
+    def test_physical_nodes_keep_all_local_threads(self):
+        args = _parse_args(["--nodes", "2", "--threads", "8", "--rank", "0"])
+
+        local = _config(args, local_spawn=True)
+        physical = _config(args, local_spawn=False)
+
+        self.assertEqual(local.worker_threads, 4)
+        self.assertEqual(physical.worker_threads, 8)
+        self.assertEqual(physical.baseline_threads, 8)
 
 
 if __name__ == "__main__":

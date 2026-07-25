@@ -62,3 +62,34 @@ Rust pode reduzir overhead de transporte, mas nao acelera o matmul por si so.
 Para superar este kernel, a implementacao Rust tambem precisaria usar MKL ou
 oneDNN. Um worker Rust so se justifica se o profiling mostrar que transporte e
 coordenacao, nao os collectives, dominam o tempo.
+
+## Duas Maquinas Fisicas
+
+As duas maquinas precisam usar os mesmos argumentos de modelo matematico. O
+head `192.168.0.8` atua como rank 0 e rendezvous Gloo.
+
+Head `192.168.0.8` (`wlan0`):
+
+```bash
+uv run python -m experiments.tensor_parallel.benchmark \
+  --nodes 2 --rank 0 \
+  --master-addr 192.168.0.8 --master-port 29500 --interface wlan0 \
+  --tokens 1 --input-features 896 --output-features 4864 \
+  --iterations 50 --warmup 5 --threads 14 --mode mlp
+```
+
+Remoto `192.168.0.11`:
+
+```bash
+uv run python -m experiments.tensor_parallel.benchmark \
+  --nodes 2 --rank 1 \
+  --master-addr 192.168.0.8 --master-port 29500 --interface wlan0 \
+  --tokens 1 --input-features 896 --output-features 4864 \
+  --iterations 50 --warmup 5 --threads "$(nproc)" --mode mlp
+```
+
+Iniciar rank 0 primeiro e rank 1 em seguida. Se a interface do remoto nao for
+`wlan0`, descobrir com `ip route get 192.168.0.8` e ajustar `--interface`. Gloo
+pode abrir conexoes TCP adicionais entre os ranks; o firewall deve permitir
+trafego TCP entre `192.168.0.8` e `192.168.0.11`, nao apenas a porta de
+rendezvous `29500`.

@@ -11,7 +11,7 @@ import datetime
 import os
 import socket
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -28,12 +28,13 @@ class BenchmarkConfig:
     output_features: int
     iterations: int
     warmup: int
-    total_threads: int
+    baseline_threads: int
+    worker_threads: int
     dtype: torch.dtype
     modes: tuple[str, ...]
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nodes", type=int, default=2)
     parser.add_argument("--tokens", type=int, default=1)
@@ -45,19 +46,24 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", choices=["float32", "bfloat16"], default="float32")
     parser.add_argument("--mode", choices=["column", "row", "mlp", "both", "all"],
                         default="mlp")
-    return parser.parse_args()
+    parser.add_argument("--rank", type=int, default=None)
+    parser.add_argument("--master-addr", default="127.0.0.1")
+    parser.add_argument("--master-port", type=int, default=29500)
+    parser.add_argument("--interface", default=None)
+    return parser.parse_args(argv)
 
 
-def _config(args: argparse.Namespace) -> BenchmarkConfig:
+def _config(args: argparse.Namespace, local_spawn: bool) -> BenchmarkConfig:
     modes = ("column", "row") if args.mode == "both" else (args.mode,)
     if args.mode == "all":
         modes = ("column", "row", "mlp")
     dtype = torch.float32 if args.dtype == "float32" else torch.bfloat16
     if args.nodes < 2:
         raise ValueError(f"nodes={args.nodes}; esperado pelo menos 2")
+    worker_threads = max(1, args.threads // args.nodes) if local_spawn else args.threads
     return BenchmarkConfig(args.nodes, args.tokens, args.input_features,
                            args.output_features, args.iterations, args.warmup,
-                           args.threads, dtype, modes)
+                           args.threads, worker_threads, dtype, modes)
 
 
 def _free_port() -> int:
@@ -74,7 +80,7 @@ def _padded(value: int, nodes: int) -> int:
 
 def _baseline(operation: Callable[[], torch.Tensor],
               config: BenchmarkConfig) -> tuple[torch.Tensor, float]:
-    torch.set_num_threads(config.total_threads)
+    torch.set_num_threads(config.baseline_threads)
     for _ in range(config.warmup):
         operation()
     start = time.perf_counter()
@@ -145,7 +151,7 @@ def _column_benchmark(config: BenchmarkConfig, rank: int) -> None:
                 for _ in range(config.nodes)] if rank == 0 else None
     baseline, baseline_seconds = _baseline(lambda: inputs @ weight, config) \
         if rank == 0 else (None, 0.0)
-    torch.set_num_threads(max(1, config.total_threads // config.nodes))
+    torch.set_num_threads(config.worker_threads)
     for _ in range(config.warmup):
         _column_step(inputs, local_weight, gathered)
     dist.barrier(); start = time.perf_counter(); compute = 0.0
@@ -198,7 +204,7 @@ def _row_benchmark(config: BenchmarkConfig, rank: int) -> None:
     dist.scatter(local_weight, scatter_list=weight_shards, src=0)
     baseline, baseline_seconds = _baseline(lambda: inputs @ weight, config) \
         if rank == 0 else (None, 0.0)
-    torch.set_num_threads(max(1, config.total_threads // config.nodes))
+    torch.set_num_threads(config.worker_threads)
     for _ in range(config.warmup):
         _row_step(local_input, local_weight, input_shards)
     dist.barrier(); start = time.perf_counter(); compute = 0.0; actual = local_input
@@ -266,7 +272,7 @@ def _mlp_benchmark(config: BenchmarkConfig, rank: int) -> None:
     baseline, baseline_seconds = _baseline(
         lambda: _full_mlp(inputs, gate, up, down), config
     ) if rank == 0 else (None, 0.0)
-    torch.set_num_threads(max(1, config.total_threads // config.nodes))
+    torch.set_num_threads(config.worker_threads)
     for _ in range(config.warmup):
         _mlp_step(inputs, local_gate, local_up, local_down)
     dist.barrier(); start = time.perf_counter(); compute = 0.0; actual = inputs
@@ -292,9 +298,12 @@ def _run_mode(mode: str, config: BenchmarkConfig, rank: int) -> None:
         _mlp_benchmark(config, rank)
 
 
-def _distributed_worker(rank: int, config: BenchmarkConfig, port: int) -> None:
-    torch.set_num_threads(max(1, config.total_threads // config.nodes))
-    dist.init_process_group("gloo", init_method=f"tcp://127.0.0.1:{port}",
+def _distributed_worker(rank: int, config: BenchmarkConfig, init_method: str,
+                        interface: str | None) -> None:
+    torch.set_num_threads(config.worker_threads)
+    if interface:
+        os.environ["GLOO_SOCKET_IFNAME"] = interface
+    dist.init_process_group("gloo", init_method=init_method,
                             rank=rank, world_size=config.nodes,
                             timeout=datetime.timedelta(seconds=120))
     try:
@@ -305,15 +314,31 @@ def _distributed_worker(rank: int, config: BenchmarkConfig, port: int) -> None:
         dist.destroy_process_group()
 
 
-def main() -> None:
-    config = _config(_parse_args())
+def _print_config(config: BenchmarkConfig, rank: int | None) -> None:
+    if rank not in (None, 0):
+        return
     print(
         f"CONFIG nodes={config.nodes} tokens={config.tokens} "
         f"matrix={config.input_features}x{config.output_features} "
-        f"threads={config.total_threads} dtype={config.dtype}"
+        f"baseline_threads={config.baseline_threads} "
+        f"worker_threads={config.worker_threads} dtype={config.dtype}"
     )
-    mp.spawn(_distributed_worker, args=(config, _free_port()),
-             nprocs=config.nodes, join=True)
+
+
+def main() -> None:
+    args = _parse_args()
+    local_spawn = args.rank is None
+    config = _config(args, local_spawn)
+    _print_config(config, args.rank)
+    if local_spawn:
+        init_method = f"tcp://127.0.0.1:{_free_port()}"
+        mp.spawn(_distributed_worker, args=(config, init_method, args.interface),
+                 nprocs=config.nodes, join=True)
+        return
+    if not 0 <= args.rank < args.nodes:
+        raise ValueError(f"rank={args.rank}; esperado entre 0 e {args.nodes - 1}")
+    init_method = f"tcp://{args.master_addr}:{args.master_port}"
+    _distributed_worker(args.rank, config, init_method, args.interface)
 
 
 if __name__ == "__main__":
