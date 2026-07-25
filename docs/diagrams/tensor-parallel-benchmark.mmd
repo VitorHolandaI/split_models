@@ -1,0 +1,296 @@
+%% Tensor-parallel benchmark flowchart source.
+flowchart TD
+    START(["Início do benchmark"]) --> CONFIG
+
+    subgraph CONFIGURATION["1. CONFIGURAÇÃO"]
+        CONFIG["Parâmetros<br/>nodes = 2<br/>tokens = T<br/>hidden = 896<br/>intermediate = 4864<br/>dtype = FP32<br/>wire = BF16<br/>worker threads = 4 ou 10"]
+        CONFIG --> SWEEP["Lista do sweep<br/>1, 2, 4, 8 ... 6000 tokens"]
+    end
+
+    SWEEP --> RAM_CHECK
+
+    subgraph SAFETY["2. VERIFICAÇÃO DE MEMÓRIA"]
+        RAM_CHECK["Estimar pesos e ativações<br/>para o próximo T"]
+        RAM_CHECK --> RAM_SAFE{"Uso estimado abaixo<br/>do limite configurado?"}
+        RAM_SAFE -- "Não" --> STOP["Parar os dois ranks<br/>de forma sincronizada"]
+        RAM_SAFE -- "Sim" --> CREATE
+    end
+
+    subgraph TOKEN_INPUT["3. ENTRADA"]
+        CREATE["Criar entrada FP32<br/>shape = [T, 896]"]
+        CREATE --> TOKEN_MEANING{"Valor de T"}
+        TOKEN_MEANING -- "T = 1" --> DECODE["Uma linha<br/>decode de um usuário"]
+        TOKEN_MEANING -- "T = 128" --> PREFILL["128 linhas simultâneas<br/>prefill ou batch"]
+        TOKEN_MEANING -- "T = 6000" --> BIG_BATCH["6000 linhas simultâneas<br/>batch ou prefill grande"]
+    end
+
+    DECODE --> WEIGHTS
+    PREFILL --> WEIGHTS
+    BIG_BATCH --> WEIGHTS
+
+    subgraph SETUP["4. SETUP DOS PESOS"]
+        WEIGHTS["Pesos completos no rank 0"]
+        WEIGHTS --> GATE_WEIGHT["gate_proj<br/>[896, 4864]"]
+        WEIGHTS --> UP_WEIGHT["up_proj<br/>[896, 4864]"]
+        WEIGHTS --> DOWN_WEIGHT["down_proj<br/>[4864, 896]"]
+
+        GATE_WEIGHT --> SPLIT_GATE["Dividir colunas<br/>2 shards [896, 2432]"]
+        UP_WEIGHT --> SPLIT_UP["Dividir colunas<br/>2 shards [896, 2432]"]
+        DOWN_WEIGHT --> SPLIT_DOWN["Dividir linhas<br/>2 shards [2432, 896]"]
+
+        SPLIT_GATE --> SEND_WEIGHTS["Distribuir shards uma vez"]
+        SPLIT_UP --> SEND_WEIGHTS
+        SPLIT_DOWN --> SEND_WEIGHTS
+    end
+
+    SEND_WEIGHTS --> BASE_INPUT
+    SEND_WEIGHTS --> R0_INPUT
+    SEND_WEIGHTS --> R1_INPUT
+
+    subgraph BASELINE["5. BASELINE LOCAL NO RANK 0"]
+        BASE_INPUT["Entrada completa<br/>[T, 896]"]
+
+        BASE_INPUT --> BASE_GATE["Gate completo<br/>[T,896] @ [896,4864]<br/>resultado [T,4864]"]
+        BASE_INPUT --> BASE_UP["Up completo<br/>[T,896] @ [896,4864]<br/>resultado [T,4864]"]
+
+        BASE_GATE --> BASE_ACT["SiLU gate * up<br/>[T,4864]"]
+        BASE_UP --> BASE_ACT
+
+        BASE_ACT --> BASE_DOWN["Down completo<br/>[T,4864] @ [4864,896]"]
+
+        BASE_DOWN --> EXPECTED["Resultado esperado FP32<br/>[T,896]"]
+        EXPECTED --> BASE_TIME["baseline_ms"]
+    end
+
+    subgraph RANK0["6. MÁQUINA 1 - RANK 0"]
+        R0_INPUT["Entrada replicada<br/>[T,896]"]
+
+        R0_INPUT --> R0_GATE["Gate shard 0<br/>[T,896] @ [896,2432]"]
+        R0_INPUT --> R0_UP["Up shard 0<br/>[T,896] @ [896,2432]"]
+
+        R0_GATE --> R0_ACT["SiLU gate * up<br/>[T,2432]"]
+        R0_UP --> R0_ACT
+
+        R0_ACT --> R0_DOWN["Down shard 0<br/>[T,2432] @ [2432,896]"]
+
+        R0_DOWN --> R0_PARTIAL["Parcial local FP32<br/>[T,896]"]
+        R0_PARTIAL --> R0_COMPUTE["Registrar compute rank 0"]
+        R0_PARTIAL --> R0_CAST["Converter FP32 para BF16"]
+    end
+
+    subgraph RANK1["7. MÁQUINA 2 - RANK 1"]
+        R1_INPUT["Entrada replicada<br/>[T,896]"]
+
+        R1_INPUT --> R1_GATE["Gate shard 1<br/>[T,896] @ [896,2432]"]
+        R1_INPUT --> R1_UP["Up shard 1<br/>[T,896] @ [896,2432]"]
+
+        R1_GATE --> R1_ACT["SiLU gate * up<br/>[T,2432]"]
+        R1_UP --> R1_ACT
+
+        R1_ACT --> R1_DOWN["Down shard 1<br/>[T,2432] @ [2432,896]"]
+
+        R1_DOWN --> R1_PARTIAL["Parcial local FP32<br/>[T,896]"]
+        R1_PARTIAL --> R1_COMPUTE["Registrar compute rank 1"]
+        R1_PARTIAL --> R1_CAST["Converter FP32 para BF16"]
+    end
+
+    R0_CAST --> TCP
+    R1_CAST --> TCP
+
+    subgraph NETWORK["8. COLLECTIVE TCP FULL-DUPLEX"]
+        TCP["Os dois ranks enviam<br/>ao mesmo tempo"]
+
+        TCP --> SEND0["Rank 0 envia seu parcial BF16"]
+        TCP --> SEND1["Rank 1 envia seu parcial BF16"]
+
+        SEND0 --> RECEIVE1["Rank 1 recebe parcial do rank 0"]
+        SEND1 --> RECEIVE0["Rank 0 recebe parcial do rank 1"]
+
+        RECEIVE0 --> CAST0["Rank 0 converte remoto<br/>BF16 para FP32"]
+        RECEIVE1 --> CAST1["Rank 1 converte remoto<br/>BF16 para FP32"]
+
+        CAST0 --> SUM0["Rank 0 soma<br/>parcial local + remoto"]
+        CAST1 --> SUM1["Rank 1 soma<br/>parcial local + remoto"]
+    end
+
+    R0_PARTIAL --> SUM0
+    R1_PARTIAL --> SUM1
+
+    SUM0 --> DIST_RESULT
+    SUM1 --> DIST_RESULT
+
+    subgraph RESULT["9. RESULTADO DISTRIBUÍDO"]
+        DIST_RESULT["Resultado tensor parallel<br/>[T,896]"]
+
+        R0_COMPUTE --> MAX_COMPUTE["Usar compute do rank mais lento"]
+        R1_COMPUTE --> MAX_COMPUTE
+
+        MAX_COMPUTE --> COMPUTE_MS["compute_ms"]
+        DIST_RESULT --> DISTRIBUTED_MS["distributed_ms"]
+
+        COMPUTE_MS --> COMMUNICATION_MS["communication_ms<br/>distributed_ms - compute_ms"]
+        DISTRIBUTED_MS --> COMMUNICATION_MS
+    end
+
+    EXPECTED --> VALIDATE
+    DIST_RESULT --> VALIDATE
+
+    subgraph VALIDATION["10. VALIDAÇÃO"]
+        VALIDATE["Comparar resultado local<br/>com distribuído"]
+
+        VALIDATE --> MAX_ERROR["max_error"]
+        VALIDATE --> REL_ERROR["relative_error"]
+
+        REL_ERROR --> QUALITY{"Erro BF16 aceitável?"}
+        QUALITY -- "Sim" --> VALID["Resultado válido"]
+        QUALITY -- "Não" --> INVALID["Rejeitar BF16 wire<br/>ou investigar precisão"]
+    end
+
+    BASE_TIME --> SPEEDUP
+    DISTRIBUTED_MS --> SPEEDUP
+
+    subgraph METRICS["11. MÉTRICAS"]
+        SPEEDUP["speedup = baseline_ms / distributed_ms"]
+        SPEEDUP --> WON{"speedup >= 1.0x?"}
+
+        WON -- "Sim" --> GREEN["Distribuído ganhou"]
+        WON -- "Não" --> RED["Baseline local ganhou"]
+
+        COMMUNICATION_MS --> NETWORK_SPEED["Throughput efetivo<br/>bytes * 8 / communication_seconds"]
+
+        NETWORK_SPEED --> TRAFFIC["Contadores<br/>sent_frames<br/>sent_bytes<br/>collective_calls"]
+    end
+
+    GREEN --> TOKEN_INTERPRETATION
+    RED --> TOKEN_INTERPRETATION
+
+    subgraph INTERPRETATION["12. INTERPRETAÇÃO POR TOKENS"]
+        TOKEN_INTERPRETATION{"Quantidade de tokens"}
+
+        TOKEN_INTERPRETATION -- "T = 1" --> ONE_RESULT["Pouco cálculo<br/>rede e sincronização dominam<br/>resultado: 0.317x"]
+
+        TOKEN_INTERPRETATION -- "T = 128" --> MID_RESULT["Matmul maior<br/>rede parcialmente amortizada<br/>resultado: 0.743x"]
+
+        TOKEN_INTERPRETATION -- "T >= 256" --> LARGE_RESULT["Com 10 workers por rank<br/>ganho começou a ficar sustentado"]
+
+        LARGE_RESULT --> RESULT_256["256 tokens<br/>1.579x"]
+        LARGE_RESULT --> RESULT_1024["1024 tokens<br/>1.642x"]
+        LARGE_RESULT --> RESULT_4096["4096 tokens<br/>1.678x"]
+        LARGE_RESULT --> RESULT_6000["6000 tokens<br/>1.646x"]
+    end
+
+    ONE_RESULT --> ONE_TOKEN_BUDGET
+
+    subgraph TOKEN1["13. LIMITE PARA UM TOKEN"]
+        ONE_TOKEN_BUDGET["Baseline: 1.431 ms<br/>Compute dividido: 0.893 ms"]
+
+        ONE_TOKEN_BUDGET --> MAX_COMM["Para ganhar:<br/>communication_ms menor que 0.538 ms"]
+
+        MAX_COMM --> CURRENT_COMM["Comunicação atual: 3.619 ms"]
+
+        CURRENT_COMM --> REDUCTION["Precisa reduzir aproximadamente 6.7x"]
+
+        REDUCTION --> OVERHEAD["Overhead total:<br/>conversão BF16<br/>socket<br/>driver<br/>rede<br/>espera<br/>soma<br/>sincronização"]
+    end
+
+    OVERHEAD --> CONNECTION_OPTIONS
+
+    subgraph INTERCONNECT["14. COMPARAÇÃO DE INTERCONEXÕES"]
+        CONNECTION_OPTIONS["Largura de banda"]
+
+        CONNECTION_OPTIONS --> CURRENT_NET["Ethernet medida<br/>0.078 GB/s"]
+
+        CONNECTION_OPTIONS --> TB4["Thunderbolt 4<br/>5 GB/s bruto"]
+
+        CONNECTION_OPTIONS --> TB5["Thunderbolt 5<br/>10 GB/s bruto"]
+
+        CONNECTION_OPTIONS --> IB["InfiniBand NDR<br/>50 GB/s"]
+
+        CONNECTION_OPTIONS --> SHARED["Memória compartilhada DDR5<br/>50 a 100 GB/s"]
+
+        CONNECTION_OPTIONS --> NVLINK["NVLink H100<br/>900 GB/s agregado"]
+
+        TB4 --> TB_WARNING["Mais banda não remove sozinho<br/>driver, protocolo e sincronização"]
+        TB5 --> TB_WARNING
+
+        IB --> LOW_LATENCY["RDMA e collective<br/>de baixa latência"]
+        SHARED --> LOW_LATENCY
+        NVLINK --> LOW_LATENCY
+    end
+
+    CURRENT_NET --> OPTIMIZATIONS
+    TB_WARNING --> OPTIMIZATIONS
+    LOW_LATENCY --> OPTIMIZATIONS
+
+    subgraph OPTIMIZATION["15. OPÇÕES PARA ACELERAR TOKENS = 1"]
+        OPTIMIZATIONS{"Estratégia"}
+
+        OPTIMIZATIONS --> INT8["Quantização INT8<br/>4x menos bytes nos pesos"]
+
+        OPTIMIZATIONS --> INT4["Quantização INT4<br/>8x menos bytes nos pesos"]
+
+        OPTIMIZATIONS --> FUSED["Kernels fundidos<br/>menos leituras e escritas"]
+
+        OPTIMIZATIONS --> SPECULATIVE["Speculative decoding<br/>verificar vários tokens juntos"]
+
+        OPTIMIZATIONS --> LOWRANK["Low-rank ou sparsity<br/>menos multiplicações<br/>pode alterar qualidade"]
+
+        OPTIMIZATIONS --> FASTER_LINK["Collective abaixo de 0.538 ms<br/>para tensor parallel ganhar"]
+
+        INT4 --> CPU_RECOMMENDATION["Melhor caminho provável<br/>para CPU e usuário único"]
+
+        SPECULATIVE --> CPU_RECOMMENDATION
+
+        FASTER_LINK --> TP_RECOMMENDATION["Caminho para tensor parallel<br/>em decode unitário"]
+    end
+
+    VALID --> EXPORT
+    INVALID --> EXPORT
+    TRAFFIC --> EXPORT
+    RESULT_256 --> EXPORT
+    RESULT_1024 --> EXPORT
+    RESULT_4096 --> EXPORT
+    RESULT_6000 --> EXPORT
+
+    subgraph OUTPUTS["16. SAÍDAS"]
+        EXPORT["Salvar resultado do ponto"]
+
+        EXPORT --> MORE_TOKENS{"Existem mais tokens no sweep?"}
+
+        MORE_TOKENS -- "Sim" --> RAM_CHECK
+        MORE_TOKENS -- "Não" --> CSV["Gerar CSV"]
+
+        CSV --> TIME_GRAPH["Gerar gráfico<br/>tokens X e tempo Y"]
+
+        CSV --> SPEED_GRAPH["Gerar gráfico<br/>speedup X e tokens Y"]
+
+        TIME_GRAPH --> FINISH(["Benchmark concluído"])
+        SPEED_GRAPH --> FINISH
+    end
+
+    style START fill:#0f172a,color:#ffffff
+    style CONFIGURATION fill:#1e293b,color:#ffffff
+    style SAFETY fill:#334155,color:#ffffff
+    style TOKEN_INPUT fill:#164e63,color:#ffffff
+    style SETUP fill:#713f12,color:#ffffff
+    style BASELINE fill:#075985,color:#ffffff
+    style RANK0 fill:#1e3a8a,color:#ffffff
+    style RANK1 fill:#581c87,color:#ffffff
+    style NETWORK fill:#9a3412,color:#ffffff
+    style RESULT fill:#155e75,color:#ffffff
+    style VALIDATION fill:#365314,color:#ffffff
+    style METRICS fill:#3f3f46,color:#ffffff
+    style INTERPRETATION fill:#4c1d95,color:#ffffff
+    style TOKEN1 fill:#7f1d1d,color:#ffffff
+    style INTERCONNECT fill:#134e4a,color:#ffffff
+    style OPTIMIZATION fill:#14532d,color:#ffffff
+    style OUTPUTS fill:#374151,color:#ffffff
+
+    style GREEN fill:#15803d,color:#ffffff
+    style RED fill:#b91c1c,color:#ffffff
+    style STOP fill:#b91c1c,color:#ffffff
+    style INVALID fill:#b91c1c,color:#ffffff
+    style VALID fill:#15803d,color:#ffffff
+    style CPU_RECOMMENDATION fill:#15803d,color:#ffffff
+    style TP_RECOMMENDATION fill:#0369a1,color:#ffffff
+    style FINISH fill:#0f172a,color:#ffffff

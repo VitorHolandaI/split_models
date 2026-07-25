@@ -3,6 +3,11 @@
 Este experimento mede se dividir as multiplicacoes de matrizes compensa o custo
 de comunicacao antes de alterar o backend do LLM.
 
+Fluxo completo do benchmark:
+
+- [Diagrama SVG](../../docs/diagrams/tensor-parallel-benchmark.svg)
+- [Fonte Mermaid](../../docs/diagrams/tensor-parallel-benchmark.mmd)
+
 ## Operacoes
 
 - column parallel: divide as colunas de `QKV`, `gate` e `up`; cada no calcula
@@ -34,6 +39,59 @@ uv run python -m experiments.tensor_parallel.benchmark \
   --input-features 896 --output-features 4864 \
   --mode mlp
 ```
+
+## O Que `--tokens` Significa
+
+`--tokens 128` cria uma entrada com 128 vetores de tokens processados ao mesmo
+tempo:
+
+```text
+entrada = [128, 896]
+```
+
+Nao e uma multiplicacao que representa 128 tokens. O matmul calcula as 128
+linhas em uma operacao grande:
+
+```text
+[128, 896] @ [896, 4864] = [128, 4864]
+```
+
+Matematicamente, isso equivale a transformar cada linha separadamente:
+
+```text
+token 1   [1, 896] @ peso
+token 2   [1, 896] @ peso
+...
+token 128 [1, 896] @ peso
+```
+
+PyTorch agrupa essas linhas em um unico matmul, que aproveita melhor os kernels
+de matriz. O MLP completo faz tres matmuls para o bloco inteiro:
+
+```text
+gate: [128, 896]  @ [896, 4864]
+up:   [128, 896]  @ [896, 4864]
+down: [128, 4864] @ [4864, 896]
+```
+
+Com duas maquinas, cada uma calcula metade da dimensao intermediaria:
+
+```text
+gate local: [128, 896]  @ [896, 2432]
+up local:   [128, 896]  @ [896, 2432]
+down local: [128, 2432] @ [2432, 896]
+```
+
+Cada rank produz um parcial `[128, 896]`; os dois parciais sao trocados e
+somados. Assim, `--tokens 128` pode representar o prefill de um prompt com 128
+tokens ou um batch de 128 sequencias. Nao representa gerar 128 tokens em ordem.
+Com KV cache, o decode interativo de um usuario normalmente processa apenas uma
+nova linha por passo, equivalente a `--tokens 1`.
+
+No sweep fisico com 10 workers por maquina, `--tokens 1` levou `1.431 ms` no
+baseline e `4.512 ms` distribuido: `0.317x`. O matmul de uma linha termina rapido,
+mas a troca, espera, soma e sincronizacao continuam existindo. Mais threads
+reduzem compute, mas nao removem essa latencia fixa da rede.
 
 ## Medicoes Locais
 
@@ -142,6 +200,78 @@ O enlace medido com iperf3 atingiu aproximadamente 624 Mbit/s sem retransmissoes
 Nesse throughput, 7 KB levam cerca de 0.09 ms para transmitir; tempos de
 comunicacao muito maiores sao latencia/sincronizacao do collective, nao falta de
 banda sustentada.
+
+## Comparacao De Interconexoes
+
+Para converter largura de banda, dividir `Gbit/s` por 8 produz `GB/s`. Os valores
+teoricos nao incluem headers nem overhead de software:
+
+| Interconexao | Largura aproximada | Comparacao com o enlace medido |
+|---|---:|---:|
+| Ethernet medida por iperf3 | 0.078 GB/s | 1x |
+| Ethernet 1 Gbit/s teorica | 0.125 GB/s | 1.6x |
+| Ethernet 10 Gbit/s teorica | 1.25 GB/s | 16x |
+| Thunderbolt 4, link bruto de 40 Gbit/s | 5 GB/s | 64x |
+| Thunderbolt 5, link bruto bidirecional de 80 Gbit/s | 10 GB/s | 128x |
+| Thunderbolt 5 Bandwidth Boost, 120 Gbit/s em um sentido | 15 GB/s | 192x |
+| InfiniBand NDR 400 Gbit/s por porta | 50 GB/s | 641x |
+| Memoria compartilhada DDR5, exemplo de CPU | 50-100 GB/s | 641-1282x |
+| NVLink de uma H100 SXM, agregado | 900 GB/s | 11538x |
+
+No resultado de 6000 tokens com 10 workers, a aplicacao mediu `664.2 Mbit/s`, ou
+`0.083 GB/s`, agregados nos dois sentidos. Esse numero pode superar o iperf3 de
+um sentido porque os dois ranks enviam simultaneamente. Ele nao significa que um
+unico sentido da Ethernet ultrapassou sua capacidade.
+
+Para um token, os dois ranks enviam apenas 3584 bytes BF16 no total. A `0.078
+GB/s`, serializar esse volume levaria aproximadamente `0.046 ms`, mas a
+comunicacao medida foi `3.619 ms`. Portanto, decode de um usuario e limitado
+principalmente por latencia, sincronizacao e software, nao apenas por GB/s. Uma
+interconexao mais rapida so ajuda de verdade se tambem oferecer collectives de
+baixa latencia, como RDMA/InfiniBand, NVLink ou memoria compartilhada local.
+
+Thunderbolt transporta PCIe, USB e possivelmente rede no mesmo link, portanto
+`5`, `10` e `15 GB/s` sao limites brutos, nao throughput garantido para a
+aplicacao. Bandwidth Boost tambem e assimetrico e nao representa `15 GB/s` em
+cada sentido ao mesmo tempo. Em Linux, uma ligacao entre maquinas ainda passa
+pelo driver e protocolo de rede Thunderbolt; ela nao vira memoria compartilhada.
+
+Para visualizar o teto, o collective de 6000 tokens envia `21.504 MB` BF16
+agregados. A serializacao ideal seria aproximadamente `276 ms` no enlace atual,
+`4.30 ms` em Thunderbolt 4 e `2.15 ms` em Thunderbolt 5 bidirecional. Para um
+token, entretanto, a serializacao atual ja e apenas `0.046 ms` diante dos `3.619
+ms` medidos. Thunderbolt pode ajudar muito batches grandes, mas nao garante
+speedup de decode unitario sem tambem reduzir a latencia do collective.
+
+As especificacoes de referencia sao [NVIDIA Quantum-2, ate 400 Gbit/s por
+porta](https://www.nvidia.com/en-us/networking/quantum2/) e [NVIDIA H100, NVLink
+de 900 GB/s](https://www.nvidia.com/en-us/data-center/h100/), alem das paginas da
+Intel para [Thunderbolt 4](https://www.intel.com/content/www/us/en/architecture-and-technology/thunderbolt/thunderbolt-4-vs-usb-c.html)
+e [Thunderbolt 5](https://www.intel.com/content/www/us/en/architecture-and-technology/thunderbolt/thunderbolt-5.html).
+Memoria DDR5 varia com canais, frequencia, CPU e plataforma; a faixa da tabela e
+apenas um exemplo.
+
+## Resultado Com 10 Workers Por Maquina
+
+O sweep com `--worker-threads 10` melhorou compute e manteve ganho de 256 ate
+6000 tokens:
+
+| Tokens simultaneos | Baseline | Distribuido | Speedup |
+|---:|---:|---:|---:|
+| 1 | 1.431 ms | 4.512 ms | 0.317x |
+| 128 | 9.812 ms | 13.212 ms | 0.743x |
+| 256 | 29.383 ms | 18.611 ms | 1.579x |
+| 1024 | 100.737 ms | 61.350 ms | 1.642x |
+| 4096 | 489.192 ms | 291.527 ms | 1.678x |
+| 6000 | 725.089 ms | 440.487 ms | 1.646x |
+
+Esse speedup compara 14 threads no baseline local com 10 threads em cada rank,
+20 threads distribuidas no total. Ele representa a capacidade adicional das duas
+maquinas, nao uma comparacao com a mesma quantidade total de threads. O resultado
+de quatro tokens (`1.951x`) e de 16 tokens (`2.152x`) nao deve ser tratado como
+threshold: os baselines de `10.071 ms` e `12.340 ms` foram anormalmente lentos e
+os tamanhos vizinhos voltaram a perder. O ganho sustentado desse sweep comeca em
+256 tokens.
 
 ## Sweep E Grafico De Threshold
 
