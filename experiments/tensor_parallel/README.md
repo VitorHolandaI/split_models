@@ -142,3 +142,54 @@ O enlace medido com iperf3 atingiu aproximadamente 624 Mbit/s sem retransmissoes
 Nesse throughput, 7 KB levam cerca de 0.09 ms para transmitir; tempos de
 comunicacao muito maiores sao latencia/sincronizacao do collective, nao falta de
 banda sustentada.
+
+## Sweep E Grafico De Threshold
+
+O sweep aumenta os tokens processados juntos, mede baseline local e distribuido
+no mesmo ponto e gera CSV + PNG. Antes de cada tamanho, todos os ranks estimam
+pesos e ativacoes; a execucao para se qualquer maquina ultrapassar a fracao de
+RAM configurada.
+
+Instalar Matplotlib apenas na maquina que gera o grafico:
+
+```bash
+uv sync --extra plots
+```
+
+Sweep local:
+
+```bash
+uv run python -m experiments.tensor_parallel.benchmark \
+  --nodes 2 \
+  --token-sweep 1,2,4,8,16,32,64,128,256 \
+  --input-features 896 --output-features 4864 \
+  --iterations 20 --warmup 5 \
+  --threads 14 --worker-threads 4 \
+  --dtype float32 --wire-dtype bfloat16 \
+  --collective tcp --mode mlp \
+  --max-memory-fraction 0.5 \
+  --output-prefix benchmark-results/local_threshold
+```
+
+Para o sweep fisico, adicionar a mesma lista `--token-sweep` aos comandos de
+rank 0 e rank 1 desta pagina. No rank 0, usar:
+
+```text
+--max-memory-fraction 0.5
+--output-prefix benchmark-results/physical_threshold
+```
+
+O rank 0 grava:
+
+```text
+benchmark-results/physical_threshold.csv
+benchmark-results/physical_threshold.png
+```
+
+O PNG usa tokens no eixo X e tempo medio por iteracao no eixo Y, com uma curva
+para o MLP local e outra para o distribuido. A primeira medicao com `speedup >=
+1.0x` e marcada como threshold. A velocidade efetiva mostra tambem a formula:
+
+```text
+(bytes reais por iteracao x 8) / segundos de comunicacao / 1.000.000
+```

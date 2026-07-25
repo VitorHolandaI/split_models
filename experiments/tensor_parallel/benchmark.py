@@ -1,18 +1,18 @@
-"""Benchmark local column/row tensor parallelism with torch.distributed.
-
-Usage example:
-    uv run python -m experiments.tensor_parallel.benchmark --nodes 2 --tokens 1
+"""Benchmark tensor parallelism with torch.distributed.
+Example: `uv run python -m experiments.tensor_parallel.benchmark --nodes 2`.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime
+import gc
 import os
 import socket
+import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 import torch.distributed as dist
@@ -21,6 +21,8 @@ import torch.nn.functional as functional
 
 from split_lm.io.network import _configure_connected_socket, _connect, _tcp_socket
 from split_lm.io.protocol import NetworkStats, _recv, _send
+from .results import BenchmarkResult, build_result, print_result, write_sweep_outputs
+from .sweep import available_memory_bytes, estimate_rank_bytes, parse_token_sweep
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,9 @@ class BenchmarkConfig:
     wire_dtype: torch.dtype | None
     modes: tuple[str, ...]
     collective: str
+    token_sweep: tuple[int, ...]
+    max_memory_fraction: float
+    output_prefix: str
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -60,6 +65,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--collective", choices=["gloo", "tcp"], default="gloo")
     parser.add_argument("--collective-port", type=int, default=29501)
     parser.add_argument("--interface", default=None)
+    parser.add_argument("--token-sweep", default=None,
+                        help="tokens crescentes, exemplo: 1,2,4,8,16,32,64,128")
+    parser.add_argument("--max-memory-fraction", type=float, default=0.5)
+    parser.add_argument("--output-prefix", default="benchmark-results/tensor_parallel_sweep")
     return parser.parse_args(argv)
 
 
@@ -73,12 +82,19 @@ def _config(args: argparse.Namespace, local_spawn: bool) -> BenchmarkConfig:
         "bfloat16": torch.bfloat16,
         "float16": torch.float16,
     }[args.wire_dtype]
+    token_sweep = parse_token_sweep(args.token_sweep, args.tokens)
     if args.nodes < 2:
         raise ValueError(f"nodes={args.nodes}; esperado pelo menos 2")
     if args.collective == "tcp" and args.nodes != 2:
         raise ValueError(f"nodes={args.nodes}; collective tcp espera exatamente 2")
     if wire_dtype is not None and args.collective != "tcp":
         raise ValueError(f"wire_dtype={args.wire_dtype!r}; esperado collective tcp")
+    if not 0 < args.max_memory_fraction <= 1:
+        raise ValueError(
+            f"max_memory_fraction={args.max_memory_fraction}; esperado entre 0 e 1"
+        )
+    if len(token_sweep) > 1 and modes != ("mlp",):
+        raise ValueError(f"modes={modes}; token_sweep espera apenas mode mlp")
     default_threads = max(1, args.threads // args.nodes) if local_spawn else args.threads
     worker_threads = args.worker_threads or default_threads
     if worker_threads < 1:
@@ -86,7 +102,8 @@ def _config(args: argparse.Namespace, local_spawn: bool) -> BenchmarkConfig:
     return BenchmarkConfig(args.nodes, args.tokens, args.input_features,
                            args.output_features, args.iterations, args.warmup,
                            args.threads, worker_threads, dtype, wire_dtype, modes,
-                           args.collective)
+                           args.collective, token_sweep,
+                           args.max_memory_fraction, args.output_prefix)
 
 
 def _free_port() -> int:
@@ -119,27 +136,17 @@ def _max_compute_seconds(seconds: float, rank: int) -> float:
     return float(measured.item()) if rank == 0 else 0.0
 
 
-def _report(mode: str, baseline: float, distributed: float, compute: float,
+def _report(mode: str, tokens: int, baseline: float, distributed: float,
+            compute: float,
             error: float, relative_error: float, minimum_bytes: int,
             matmuls_per_rank: int, iterations: int, sent_frames: int,
-            sent_bytes: int) -> None:
-    speedup = baseline / distributed if distributed else 0.0
-    communication = max(0.0, distributed - compute)
-    print(
-        f"TENSOR_PARALLEL mode={mode} baseline_ms={baseline * 1000:.3f} "
-        f"distributed_ms={distributed * 1000:.3f} speedup={speedup:.3f}x"
+            sent_bytes: int) -> BenchmarkResult:
+    result = build_result(
+        mode, tokens, baseline, distributed, compute, minimum_bytes, error,
+        relative_error, matmuls_per_rank, iterations, sent_frames, sent_bytes,
     )
-    print(
-        f"TENSOR_PARALLEL mode={mode} compute_ms={compute * 1000:.3f} "
-        f"communication_ms={communication * 1000:.3f} min_network={minimum_bytes}B "
-        f"max_error={error:.6g} relative_error={relative_error:.6g}"
-    )
-    transport = f"sent_frames={sent_frames} sent_bytes={sent_bytes}" \
-        if sent_frames else "sent_frames=gloo-managed sent_bytes=gloo-managed"
-    print(
-        f"TENSOR_PARALLEL mode={mode} matmuls_per_rank={matmuls_per_rank} "
-        f"collective_calls={iterations} {transport}"
-    )
+    print_result(result, color=sys.stdout.isatty())
+    return result
 
 
 def _errors(actual: torch.Tensor, expected: torch.Tensor) -> tuple[float, float]:
@@ -171,7 +178,8 @@ def _column_step(inputs: torch.Tensor, local_weight: torch.Tensor,
     return partial, compute
 
 
-def _column_benchmark(config: BenchmarkConfig, rank: int) -> None:
+def _column_benchmark(config: BenchmarkConfig,
+                      rank: int) -> BenchmarkResult | None:
     inputs, weight = _column_tensors(config, rank)
     chunk = _padded(config.output_features, config.nodes) // config.nodes
     local_weight = torch.empty((config.input_features, chunk), dtype=config.dtype)
@@ -195,8 +203,10 @@ def _column_benchmark(config: BenchmarkConfig, rank: int) -> None:
         error, relative_error = _errors(actual, baseline)
         network = inputs.numel() * inputs.element_size() * (config.nodes - 1)
         network += actual.numel() * actual.element_size() * (config.nodes - 1) // config.nodes
-        _report("column", baseline_seconds, distributed, max_compute, error,
-                relative_error, network, 1, config.iterations, 0, 0)
+        return _report("column", config.tokens, baseline_seconds, distributed,
+                       max_compute, error, relative_error, network, 1,
+                       config.iterations, 0, 0)
+    return None
 
 
 def _row_tensors(config: BenchmarkConfig, rank: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -223,7 +233,8 @@ def _row_step(local_input: torch.Tensor, local_weight: torch.Tensor,
     return partial, compute
 
 
-def _row_benchmark(config: BenchmarkConfig, rank: int) -> None:
+def _row_benchmark(config: BenchmarkConfig,
+                   rank: int) -> BenchmarkResult | None:
     inputs, weight = _row_tensors(config, rank)
     chunk = _padded(config.input_features, config.nodes) // config.nodes
     local_input = torch.empty((config.tokens, chunk), dtype=config.dtype)
@@ -247,8 +258,10 @@ def _row_benchmark(config: BenchmarkConfig, rank: int) -> None:
         error, relative_error = _errors(actual, baseline)
         network = inputs.numel() * inputs.element_size() * (config.nodes - 1) // config.nodes
         network += 2 * (config.nodes - 1) * actual.numel() * actual.element_size()
-        _report("row", baseline_seconds, distributed, max_compute, error,
-                relative_error, network, 1, config.iterations, 0, 0)
+        return _report("row", config.tokens, baseline_seconds, distributed,
+                       max_compute, error, relative_error, network, 1,
+                       config.iterations, 0, 0)
+    return None
 
 
 def _full_mlp(inputs: torch.Tensor, gate: torch.Tensor, up: torch.Tensor,
@@ -324,7 +337,7 @@ def _aggregate_sent(traffic: NetworkStats | None, rank: int) -> tuple[int, int]:
 
 
 def _mlp_benchmark(config: BenchmarkConfig, rank: int,
-                   connection: socket.socket | None) -> None:
+                   connection: socket.socket | None) -> BenchmarkResult | None:
     inputs, gate, up, down = _mlp_tensors(config, rank)
     chunk = _padded(config.output_features, config.nodes) // config.nodes
     local_gate = torch.empty((config.input_features, chunk), dtype=config.dtype)
@@ -359,10 +372,12 @@ def _mlp_benchmark(config: BenchmarkConfig, rank: int,
         network = _mlp_minimum_network_bytes(
             config.tokens, config.input_features, wire_size, config.nodes
         )
-        _report(f"mlp-{config.collective}", baseline_seconds, distributed,
-                max_compute, error,
-                relative_error, network, 3, config.iterations, sent_frames,
-                sent_bytes)
+        return _report(
+            f"mlp-{config.collective}", config.tokens, baseline_seconds,
+            distributed, max_compute, error, relative_error, network, 3,
+            config.iterations, sent_frames, sent_bytes,
+        )
+    return None
 
 
 def _mlp_minimum_network_bytes(tokens: int, hidden_size: int,
@@ -371,13 +386,12 @@ def _mlp_minimum_network_bytes(tokens: int, hidden_size: int,
 
 
 def _run_mode(mode: str, config: BenchmarkConfig, rank: int,
-              connection: socket.socket | None) -> None:
+              connection: socket.socket | None) -> BenchmarkResult | None:
     if mode == "column":
-        _column_benchmark(config, rank)
-    elif mode == "row":
-        _row_benchmark(config, rank)
-    else:
-        _mlp_benchmark(config, rank, connection)
+        return _column_benchmark(config, rank)
+    if mode == "row":
+        return _row_benchmark(config, rank)
+    return _mlp_benchmark(config, rank, connection)
 
 
 def _open_tcp_collective(rank: int, master_addr: str,
@@ -393,6 +407,29 @@ def _open_tcp_collective(rank: int, master_addr: str,
     return connection
 
 
+def _sweep_point_safe(config: BenchmarkConfig, rank: int) -> bool:
+    element_size = torch.empty((), dtype=config.dtype).element_size()
+    estimated = estimate_rank_bytes(
+        config.tokens, config.input_features, config.output_features,
+        config.nodes, element_size, rank,
+    )
+    available = available_memory_bytes()
+    safe = int(estimated <= available * config.max_memory_fraction)
+    safe_tensor = torch.tensor([safe], dtype=torch.int64)
+    estimate_tensor = torch.tensor([estimated], dtype=torch.int64)
+    available_tensor = torch.tensor([available], dtype=torch.int64)
+    dist.all_reduce(safe_tensor, op=dist.ReduceOp.MIN)
+    dist.all_reduce(estimate_tensor, op=dist.ReduceOp.MAX)
+    dist.all_reduce(available_tensor, op=dist.ReduceOp.MIN)
+    if rank == 0:
+        print(
+            f"SWEEP_RAM tokens={config.tokens} max_estimated_mib={int(estimate_tensor[0]) / 2**20:.1f} "
+            f"min_available_mib={int(available_tensor[0]) / 2**20:.1f} "
+            f"limit={config.max_memory_fraction:.0%} safe={bool(safe_tensor[0])}"
+        )
+    return bool(safe_tensor[0])
+
+
 def _distributed_worker(rank: int, config: BenchmarkConfig, init_method: str,
                         interface: str | None, master_addr: str,
                         collective_port: int) -> None:
@@ -404,10 +441,21 @@ def _distributed_worker(rank: int, config: BenchmarkConfig, init_method: str,
                             timeout=datetime.timedelta(seconds=120))
     connection = _open_tcp_collective(rank, master_addr, collective_port) \
         if config.collective == "tcp" else None
+    results: list[BenchmarkResult] = []
     try:
-        for mode in config.modes:
-            _run_mode(mode, config, rank, connection)
-            dist.barrier()
+        for tokens in config.token_sweep:
+            point_config = replace(config, tokens=tokens)
+            if not _sweep_point_safe(point_config, rank):
+                break
+            for mode in point_config.modes:
+                result = _run_mode(mode, point_config, rank, connection)
+                if result is not None:
+                    results.append(result)
+                dist.barrier()
+            gc.collect()
+        if rank == 0 and len(config.token_sweep) > 1 and results:
+            csv_path, png_path = write_sweep_outputs(results, config.output_prefix)
+            print(f"SWEEP_OUTPUT csv={csv_path} png={png_path}")
     finally:
         if connection is not None:
             connection.close()
@@ -423,7 +471,7 @@ def _print_config(config: BenchmarkConfig, rank: int | None) -> None:
         f"baseline_threads={config.baseline_threads} "
         f"worker_threads={config.worker_threads} dtype={config.dtype} "
         f"wire_dtype={config.wire_dtype or config.dtype} "
-        f"collective={config.collective}"
+        f"collective={config.collective} token_sweep={config.token_sweep}"
     )
 
 
