@@ -60,6 +60,19 @@ def _stream_token(tokenizer, token_id):
     sys.stdout.flush()
 
 
+def _prompt_ids(tokenizer, prompt, device, messages=None):
+    if getattr(tokenizer, "chat_template", None):
+        messages = messages or [{"role": "user", "content": prompt}]
+        encoded = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
+        )
+        return encoded["input_ids"].to(device)
+    return tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+
+
 def _load_weights(model_name, layer_start, layer_end, n_total, config):
     shard_paths = _weight_paths(model_name, layer_start, layer_end, n_total)
     is_head = layer_start == 0
@@ -282,9 +295,8 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
         while True:
             prompt = input(">>> ")
             if prompt.strip() == "/exit": break
-            history.append(f"User: {prompt}")
-            full = "\n".join(history) + "\nAssistant:"
-            ids = tokenizer(full, return_tensors="pt").input_ids.to(device)
+            history.append({"role": "user", "content": prompt})
+            ids = _prompt_ids(tokenizer, prompt, device, history)
             log.info("HEAD: %d tokens", ids.shape[1])
             stats = {"total": 0.0} if profiling else None
             out_tokens = []
@@ -306,11 +318,13 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
                 stats["total"] = time.perf_counter() - total_start
                 print(tokenizer.decode(out_tokens))
                 _profile_report("head", stats)
+            answer = tokenizer.decode(out_tokens, skip_special_tokens=True)
+            history.append({"role": "assistant", "content": answer})
             sys.stdout.write("\n")
             sys.stdout.flush()
     else:
         prompt = prompt_text
-        ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+        ids = _prompt_ids(tokenizer, prompt, device)
         log.info("HEAD: %r -> %d tokens", prompt, ids.shape[1])
         stats = {"total": 0.0} if profiling else None
         out_tokens = []
