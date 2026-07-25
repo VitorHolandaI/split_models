@@ -8,6 +8,30 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(me
 log = logging.getLogger("split_lm")
 
 
+def _stat_add(stats, key, seconds):
+    if stats is None:
+        return
+    stats[key] = stats.get(key, 0.0) + seconds
+
+
+def _stat_inc(stats, key, count=1):
+    if stats is None:
+        return
+    stats[key] = stats.get(key, 0) + count
+
+
+def _profile_report(node, stats):
+    if not stats:
+        return
+    total = stats.get("total", 0.0)
+    parts = [f"PROFILE {node}: tokens={int(stats.get('tokens', 0))} total={total:.3f}s"]
+    for key in sorted(k for k in stats if k not in {"tokens", "total"}):
+        value = stats[key]
+        pct = (value / total * 100.0) if total else 0.0
+        parts.append(f"{key}={value:.3f}s ({pct:.1f}%)")
+    print(" | ".join(parts), file=sys.stderr, flush=True)
+
+
 def _stream_token(tokenizer, token_id):
     sys.stdout.write(tokenizer.decode(token_id))
     sys.stdout.flush()
@@ -170,12 +194,18 @@ def _recv_token(srv_tok, tok, device):
             tok = srv_tok.accept()[0]
 
 
-def _send_head_state(conn, ids, head_model, device):
+def _send_head_state(conn, ids, head_model, device, stats):
     if head_model is None:
+        start = time.perf_counter()
         _send(conn, ids)
+        _stat_add(stats, "send", time.perf_counter() - start)
         return
+    start = time.perf_counter()
     hidden = _forward(head_model, None, device, True, False, ids)
+    _stat_add(stats, "forward", time.perf_counter() - start)
+    start = time.perf_counter()
     _send(conn, hidden)
+    _stat_add(stats, "send", time.perf_counter() - start)
 
 
 def _forward(model, hidden, dev, is_head, is_last, input_ids=None):
@@ -201,7 +231,7 @@ def _forward(model, hidden, dev, is_head, is_last, input_ids=None):
 
 def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
              worker_addr, token_port, control_port, worker_count, ready_timeout,
-             head_layer_start, head_layer_end):
+             head_layer_start, head_layer_end, profiling, prompt_text):
     """Head conecta no primeiro worker, escuta token de volta."""
     ready, errors, controls, lock = set(), [], {}, threading.Lock()
     threading.Thread(target=_control_server,
@@ -217,6 +247,7 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
         log.info("HEAD slice layers %d..%d", head_layer_start, head_layer_end - 1)
 
     _wait_ready(worker_count, ready, errors, lock, ready_timeout)
+    log.info("HEAD conectando ao worker %s", worker_addr)
     conn = _connect(worker_addr, "worker")
     log.info("HEAD conectou ao worker %s", worker_addr)
     tok = srv_tok.accept()[0]; log.info("HEAD: token-back conectou")
@@ -231,28 +262,52 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
             full = "\n".join(history) + "\nAssistant:"
             ids = tokenizer(full, return_tensors="pt").input_ids.to(device)
             log.info("HEAD: %d tokens", ids.shape[1])
+            stats = {"total": 0.0} if profiling else None
+            out_tokens = []
+            total_start = time.perf_counter()
             for step in range(max_new):
-                _send_head_state(conn, ids, head_model, device)
+                _send_head_state(conn, ids, head_model, device, stats)
                 if errors: raise RuntimeError(errors[-1])
+                start = time.perf_counter()
                 token, tok = _recv_token(srv_tok, tok, device)
+                _stat_add(stats, "recv_token", time.perf_counter() - start)
                 nid = token.item()
                 if nid == tokenizer.eos_token_id: break
-                _stream_token(tokenizer, nid)
+                out_tokens.append(nid)
+                if not profiling:
+                    _stream_token(tokenizer, nid)
                 ids = torch.cat([ids, torch.tensor([[nid]], device=device)], dim=1)
+                _stat_inc(stats, "tokens")
+            if profiling:
+                stats["total"] = time.perf_counter() - total_start
+                print(tokenizer.decode(out_tokens))
+                _profile_report("head", stats)
             sys.stdout.write("\n")
             sys.stdout.flush()
     else:
-        prompt = "The meaning of life is"
+        prompt = prompt_text
         ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
         log.info("HEAD: %r -> %d tokens", prompt, ids.shape[1])
+        stats = {"total": 0.0} if profiling else None
+        out_tokens = []
+        total_start = time.perf_counter()
         for step in range(max_new):
-            _send_head_state(conn, ids, head_model, device)
+            _send_head_state(conn, ids, head_model, device, stats)
             if errors: raise RuntimeError(errors[-1])
+            start = time.perf_counter()
             token, tok = _recv_token(srv_tok, tok, device)
+            _stat_add(stats, "recv_token", time.perf_counter() - start)
             nid = token.item()
             if nid == tokenizer.eos_token_id: break
-            _stream_token(tokenizer, nid)
+            out_tokens.append(nid)
+            if not profiling:
+                _stream_token(tokenizer, nid)
             ids = torch.cat([ids, torch.tensor([[nid]], device=device)], dim=1)
+            _stat_inc(stats, "tokens")
+        if profiling:
+            stats["total"] = time.perf_counter() - total_start
+            print(tokenizer.decode(out_tokens))
+            _profile_report("head", stats)
         sys.stdout.write("\n")
         sys.stdout.flush()
 
@@ -269,8 +324,8 @@ def _send_error(control, node_id, stage, exc):
 
 
 def run_worker(model_name, layer_start, layer_end, n_total, device,
-               tokenizer, max_new, listen_port, send_to, token_back_to,
-               control_to, node_id, fake_error):
+                tokenizer, max_new, listen_port, send_to, token_back_to,
+                control_to, node_id, fake_error, profiling):
     """Worker: escuta upstream, conecta no downstream, manda token pro head."""
     is_first = layer_start == 0
     is_last = layer_end == n_total
@@ -311,28 +366,45 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
 
     try:
         step = 0
+        stats = {"total": 0.0} if profiling else None
+        total_start = time.perf_counter()
         while True:
             step += 1
             if fake_error == "run":
                 raise RuntimeError(f"erro fake de run em {node_id}")
+            start = time.perf_counter()
             if is_first:
                 ids = _recv(upstream, device)
+                _stat_add(stats, "recv", time.perf_counter() - start)
+                start = time.perf_counter()
                 h = _forward(model, None, device, True, is_last, ids)
             else:
                 h = _recv(upstream, device)
+                _stat_add(stats, "recv", time.perf_counter() - start)
+                start = time.perf_counter()
                 h = _forward(model, h, device, False, is_last)
+            _stat_add(stats, "forward", time.perf_counter() - start)
 
             if is_last:
                 nid = h[0, -1].argmax()
+                start = time.perf_counter()
                 _send(token_back, nid.unsqueeze(0))
+                _stat_add(stats, "send_token", time.perf_counter() - start)
+                _stat_inc(stats, "tokens")
                 log.info("WORKER %s: step %d token %d", node_id, step, nid.item())
             else:
+                start = time.perf_counter()
                 _send(downstream, h)
+                _stat_add(stats, "send_downstream", time.perf_counter() - start)
+                _stat_inc(stats, "tokens")
                 log.info("WORKER %s: step %d encaminhado", node_id, step)
     except ConnectionError as exc:
         if str(exc) != "fechou":
             _send_error(control, node_id, "run", exc)
             raise
+        if stats is not None:
+            stats["total"] = time.perf_counter() - total_start
+            _profile_report(node_id, stats)
         log.info("WORKER %s: upstream fechou", node_id)
     except Exception as exc:
         _send_error(control, node_id, "run", exc)
@@ -365,6 +437,8 @@ def main():
     ap.add_argument("--token-back-to", default=None, help="worker: addr:port do head pra token (ultimo worker)")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--max-new-tokens", type=int, default=20)
+    ap.add_argument("--prompt", default="Write a short poem about distributed computers.")
+    ap.add_argument("--profiling", action="store_true", help="mede tempos e imprime resumo no fim da request")
     ap.add_argument("--interactive", action="store_true")
     ap.add_argument("--verbose", action="store_true", help="mostra logs INFO tambem no head")
     args = ap.parse_args()
@@ -406,7 +480,7 @@ def main():
         run_head(args.model, n_total, args.device, t, args.max_new_tokens,
                  args.interactive, _parse(args.connect), args.port,
                  args.control_port, args.workers, args.ready_timeout,
-                 args.layer_start, args.layer_end)
+                 args.layer_start, args.layer_end, args.profiling, args.prompt)
     else:
         if args.layer_start is None or args.layer_end is None:
             print("worker precisa de --layer-start e --layer-end")
@@ -424,7 +498,7 @@ def main():
         run_worker(args.model, args.layer_start, args.layer_end, n_total, args.device,
                    t, args.max_new_tokens, args.port,
                    _parse(args.connect), _parse(args.token_back_to),
-                   _parse(args.control_to), node_id, args.fake_error)
+                   _parse(args.control_to), node_id, args.fake_error, args.profiling)
 
 
 if __name__ == "__main__":
