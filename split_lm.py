@@ -24,12 +24,26 @@ def _profile_report(node, stats):
     if not stats:
         return
     total = stats.get("total", 0.0)
-    parts = [f"PROFILE {node}: tokens={int(stats.get('tokens', 0))} total={total:.3f}s"]
+    tokens = int(stats.get("tokens", 0))
+    tok_s = tokens / total if total else 0.0
+    ms_tok = total / tokens * 1000.0 if tokens else 0.0
+    print(f"PROFILE {node}: generated {tokens} tokens in {total:.3f}s ({tok_s:.2f} tok/s, {ms_tok:.1f} ms/token)", file=sys.stderr, flush=True)
     for key in sorted(k for k in stats if k not in {"tokens", "total"}):
-        value = stats[key]
-        pct = (value / total * 100.0) if total else 0.0
-        parts.append(f"{key}={value:.3f}s ({pct:.1f}%)")
-    print(" | ".join(parts), file=sys.stderr, flush=True)
+        _profile_step_report(key, stats[key], total)
+
+
+def _profile_step_report(key, seconds, total):
+    names = {
+        "forward": "ran this node's model layers",
+        "recv": "waited for hidden states from the previous node",
+        "recv_token": "waited for the final token from the tail node",
+        "send": "sent hidden states/input to the next node",
+        "send_downstream": "sent hidden states to the next worker",
+        "send_token": "sent the selected token back to the head",
+    }
+    pct = (seconds / total * 100.0) if total else 0.0
+    label = names.get(key, key.replace("_", " "))
+    print(f"PROFILE step: {label}: {seconds:.3f}s ({pct:.1f}% of total)", file=sys.stderr, flush=True)
 
 
 def _stream_token(tokenizer, token_id):
