@@ -454,8 +454,13 @@ def _distributed_worker(rank: int, config: BenchmarkConfig, init_method: str,
                 dist.barrier()
             gc.collect()
         if rank == 0 and len(config.token_sweep) > 1 and results:
-            csv_path, png_path = write_sweep_outputs(results, config.output_prefix)
-            print(f"SWEEP_OUTPUT csv={csv_path} png={png_path}")
+            csv_path, png_path, speedup_png = write_sweep_outputs(
+                results, config.output_prefix
+            )
+            print("\nSWEEP CONCLUÍDO\n")
+            print(f"csv={csv_path}\n")
+            print(f"tempos_png={png_path}\n")
+            print(f"speedup_png={speedup_png}")
     finally:
         if connection is not None:
             connection.close()

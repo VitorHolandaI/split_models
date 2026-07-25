@@ -26,7 +26,11 @@ class TensorParallelResultsTest(unittest.TestCase):
 
         self.assertIn("effective_network_mbps=232.3", report)
         self.assertIn("network_formula=(114724 bytes × 8)", report)
-        self.assertIn("max_error=369.164 | maior diferença absoluta", report)
+        self.assertIn("max_error=369.164", report)
+        self.assertIn("Maior diferença absoluta", report)
+        self.assertIn("DESEMPENHO", report)
+        self.assertIn("REDE", report)
+        self.assertIn("menor é melhor.\n\ndistributed_ms", report)
 
     def test_color_can_be_enabled(self):
         result = build_result(
@@ -34,7 +38,12 @@ class TensorParallelResultsTest(unittest.TestCase):
             1_024, 0.0, 0.0, 3, 1, 2, 1_060,
         )
 
-        self.assertIn("\033[32m", "\n".join(result_lines(result, color=True)))
+        report = "\n".join(result_lines(result, color=True))
+
+        self.assertIn("\033[1;36mRESULTADO", report)
+        self.assertIn("\033[36mbaseline_ms", report)
+        self.assertIn("\033[35mdistributed_ms", report)
+        self.assertIn("\033[32mspeedup", report)
 
     def test_sweep_writes_csv_and_png(self):
         losing = build_result(
@@ -47,10 +56,14 @@ class TensorParallelResultsTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             prefix = str(Path(directory) / "threshold")
-            csv_path, png_path = write_sweep_outputs([losing, winning], prefix)
+            csv_path, png_path, speedup_png_path = write_sweep_outputs(
+                [losing, winning], prefix
+            )
 
             self.assertIn("baseline_ms", csv_path.read_text(encoding="utf-8"))
             self.assertGreater(png_path.stat().st_size, 1_000)
+            self.assertEqual(speedup_png_path.name, "threshold_speedup.png")
+            self.assertGreater(speedup_png_path.stat().st_size, 1_000)
 
 
 if __name__ == "__main__":

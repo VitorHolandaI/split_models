@@ -146,7 +146,7 @@ banda sustentada.
 ## Sweep E Grafico De Threshold
 
 O sweep aumenta os tokens processados juntos, mede baseline local e distribuido
-no mesmo ponto e gera CSV + PNG. Antes de cada tamanho, todos os ranks estimam
+no mesmo ponto e gera CSV + dois PNGs. Antes de cada tamanho, todos os ranks estimam
 pesos e ativacoes; a execucao para se qualquer maquina ultrapassar a fracao de
 RAM configurada.
 
@@ -184,11 +184,14 @@ O rank 0 grava:
 ```text
 benchmark-results/physical_threshold.csv
 benchmark-results/physical_threshold.png
+benchmark-results/physical_threshold_speedup.png
 ```
 
-O PNG usa tokens no eixo X e tempo medio por iteracao no eixo Y, com uma curva
-para o MLP local e outra para o distribuido. A primeira medicao com `speedup >=
-1.0x` e marcada como threshold. A velocidade efetiva mostra tambem a formula:
+O primeiro PNG usa tokens no eixo X e tempo medio por iteracao no eixo Y, com
+uma curva para o MLP local e outra para o distribuido. A primeira medicao com
+`speedup >= 1.0x` e marcada como threshold. O PNG `_speedup` usa tokens no eixo
+Y e speedup atingido no eixo X; vermelho perdeu e verde ganhou do local. A
+velocidade efetiva mostra tambem a formula:
 
 ```text
 (bytes reais por iteracao x 8) / segundos de comunicacao / 1.000.000
