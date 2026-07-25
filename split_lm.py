@@ -170,6 +170,14 @@ def _recv_token(srv_tok, tok, device):
             tok = srv_tok.accept()[0]
 
 
+def _send_head_state(conn, ids, head_model, device):
+    if head_model is None:
+        _send(conn, ids)
+        return
+    hidden = _forward(head_model, None, device, True, False, ids)
+    _send(conn, hidden)
+
+
 def _forward(model, hidden, dev, is_head, is_last, input_ids=None):
     with torch.no_grad():
         if is_head:
@@ -192,7 +200,8 @@ def _forward(model, hidden, dev, is_head, is_last, input_ids=None):
 # ── head ──────────────────────────────────────────────────────────────────
 
 def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
-             worker_addr, token_port, control_port, worker_count, ready_timeout):
+             worker_addr, token_port, control_port, worker_count, ready_timeout,
+             head_layer_start, head_layer_end):
     """Head conecta no primeiro worker, escuta token de volta."""
     ready, errors, controls, lock = set(), [], {}, threading.Lock()
     threading.Thread(target=_control_server,
@@ -201,6 +210,11 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
     srv_tok = socket.socket(); srv_tok.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv_tok.bind(("0.0.0.0", token_port)); srv_tok.listen(8)
     log.info("HEAD aguardando token em :%d...", token_port)
+
+    head_model = None
+    if head_layer_start is not None:
+        head_model = _build(model_name, head_layer_start, head_layer_end, n_total, device)
+        log.info("HEAD slice layers %d..%d", head_layer_start, head_layer_end - 1)
 
     _wait_ready(worker_count, ready, errors, lock, ready_timeout)
     conn = _connect(worker_addr, "worker")
@@ -218,7 +232,7 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
             ids = tokenizer(full, return_tensors="pt").input_ids.to(device)
             log.info("HEAD: %d tokens", ids.shape[1])
             for step in range(max_new):
-                _send(conn, ids)
+                _send_head_state(conn, ids, head_model, device)
                 if errors: raise RuntimeError(errors[-1])
                 token, tok = _recv_token(srv_tok, tok, device)
                 nid = token.item()
@@ -232,7 +246,7 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
         ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
         log.info("HEAD: %r -> %d tokens", prompt, ids.shape[1])
         for step in range(max_new):
-            _send(conn, ids)
+            _send_head_state(conn, ids, head_model, device)
             if errors: raise RuntimeError(errors[-1])
             token, tok = _recv_token(srv_tok, tok, device)
             nid = token.item()
@@ -381,13 +395,18 @@ def main():
     cfg = AutoConfig.from_pretrained(args.model)
     n_total = args.total_layers or cfg.num_hidden_layers
 
+    if args.role == "head" and (args.layer_start is not None or args.layer_end is not None):
+        if args.layer_start != 0 or args.layer_end is None or args.layer_end >= n_total:
+            raise ValueError("head slice precisa de --layer-start 0 e --layer-end entre 1 e total_layers-1")
+
     if args.role == "head":
         if not args.connect:
             print("head precisa de --connect addr:port do primeiro worker")
             return
         run_head(args.model, n_total, args.device, t, args.max_new_tokens,
                  args.interactive, _parse(args.connect), args.port,
-                 args.control_port, args.workers, args.ready_timeout)
+                 args.control_port, args.workers, args.ready_timeout,
+                 args.layer_start, args.layer_end)
     else:
         if args.layer_start is None or args.layer_end is None:
             print("worker precisa de --layer-start e --layer-end")
