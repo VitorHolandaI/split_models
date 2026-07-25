@@ -2,7 +2,11 @@ import unittest
 
 import torch
 
-from experiments.tensor_parallel.benchmark import _config, _parse_args
+from experiments.tensor_parallel.benchmark import (
+    _config,
+    _mlp_minimum_network_bytes,
+    _parse_args,
+)
 from experiments.tensor_parallel.ops import column_parallel, mlp_parallel, row_parallel
 
 
@@ -44,6 +48,13 @@ class TensorParallelTest(unittest.TestCase):
         self.assertEqual(local.worker_threads, 4)
         self.assertEqual(physical.worker_threads, 8)
         self.assertEqual(physical.baseline_threads, 8)
+
+    def test_steady_state_mlp_only_communicates_final_hidden(self):
+        network_bytes = _mlp_minimum_network_bytes(
+            tokens=1, hidden_size=896, element_size=4, nodes=2
+        )
+
+        self.assertEqual(network_bytes, 7_168)
 
 
 if __name__ == "__main__":

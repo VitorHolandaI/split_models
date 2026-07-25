@@ -252,7 +252,6 @@ def _scatter_mlp_weight(weight: torch.Tensor, local_weight: torch.Tensor,
 
 def _mlp_step(inputs: torch.Tensor, gate: torch.Tensor, up: torch.Tensor,
               down: torch.Tensor) -> tuple[torch.Tensor, float]:
-    dist.broadcast(inputs, src=0)
     start = time.perf_counter()
     partial = _full_mlp(inputs, gate, up, down)
     compute = time.perf_counter() - start
@@ -269,6 +268,7 @@ def _mlp_benchmark(config: BenchmarkConfig, rank: int) -> None:
     _scatter_mlp_weight(gate, local_gate, chunk, 1, rank)
     _scatter_mlp_weight(up, local_up, chunk, 1, rank)
     _scatter_mlp_weight(down, local_down, chunk, 0, rank)
+    dist.broadcast(inputs, src=0)
     baseline, baseline_seconds = _baseline(
         lambda: _full_mlp(inputs, gate, up, down), config
     ) if rank == 0 else (None, 0.0)
@@ -283,10 +283,16 @@ def _mlp_benchmark(config: BenchmarkConfig, rank: int) -> None:
     max_compute = _max_compute_seconds(compute / config.iterations, rank)
     if rank == 0 and baseline is not None:
         error, relative_error = _errors(actual, baseline)
-        network = inputs.numel() * inputs.element_size() * (config.nodes - 1)
-        network += 2 * (config.nodes - 1) * actual.numel() * actual.element_size()
+        network = _mlp_minimum_network_bytes(
+            config.tokens, config.input_features, actual.element_size(), config.nodes
+        )
         _report("mlp", baseline_seconds, distributed, max_compute, error,
                 relative_error, network)
+
+
+def _mlp_minimum_network_bytes(tokens: int, hidden_size: int,
+                               element_size: int, nodes: int) -> int:
+    return 2 * (nodes - 1) * tokens * hidden_size * element_size
 
 
 def _run_mode(mode: str, config: BenchmarkConfig, rank: int) -> None:

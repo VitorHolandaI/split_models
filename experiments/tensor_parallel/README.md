@@ -44,19 +44,18 @@ decode column 896x4864: baseline 0.365 ms, distribuido 1.710 ms, 0.213x
 decode row 4864x896:    baseline 0.514 ms, distribuido 5.774 ms, 0.089x
 prefill column, 32:     baseline 1.742 ms, distribuido 2.688 ms, 0.648x
 prefill row, 32:        baseline 4.826 ms, distribuido 6.224 ms, 0.775x
-decode MLP completo:    baseline 7.287 ms, distribuido 14.897 ms, 0.489x
-prefill MLP, 32:        baseline 5.780 ms, distribuido 13.169 ms, 0.439x
+decode MLP steady-state: baseline 3.550 ms, distribuido 4.050 ms, 0.876x
+prefill MLP, 32:         baseline 5.932 ms, distribuido 9.677 ms, 0.613x
 ```
 
 O resultado local e mais lento porque os processos dividem os mesmos cores e a
 mesma largura de memoria. Em maquinas fisicas, cada no adiciona compute, mas a
-rede precisa superar o custo de broadcast, gather e all-reduce por camada.
+rede precisa superar o custo do all-reduce por camada.
 
 O MLP completo reduziu o trafego teorico minimo de decode de aproximadamente
-30 KB para 10.5 KB por camada ao eliminar gather/scatter intermediario. Mesmo
-assim, dois processos locais continuaram mais lentos porque dividem os mesmos
-cores. O proximo teste de velocidade precisa usar duas maquinas fisicas, dando
-compute independente a cada shard, e comparar Ethernet contra Wi-Fi.
+30 KB para 7 KB por camada ao eliminar gather/scatter intermediario. A entrada
+replicated e sincronizada uma vez no setup; o steady-state comunica apenas a
+saida hidden do `down_proj`. Dois processos locais ainda dividem os mesmos cores.
 
 Rust pode reduzir overhead de transporte, mas nao acelera o matmul por si so.
 Para superar este kernel, a implementacao Rust tambem precisaria usar MKL ou
@@ -83,13 +82,18 @@ Remoto `192.168.0.11`:
 ```bash
 uv run python -m experiments.tensor_parallel.benchmark \
   --nodes 2 --rank 1 \
-  --master-addr 192.168.0.8 --master-port 29500 --interface wlan0 \
+  --master-addr 192.168.0.8 --master-port 29500 --interface enp37s0 \
   --tokens 1 --input-features 896 --output-features 4864 \
   --iterations 50 --warmup 5 --threads "$(nproc)" --mode mlp
 ```
 
-Iniciar rank 0 primeiro e rank 1 em seguida. Se a interface do remoto nao for
-`wlan0`, descobrir com `ip route get 192.168.0.8` e ajustar `--interface`. Gloo
+Iniciar rank 0 primeiro e rank 1 em seguida. Se a interface do remoto mudar,
+descobrir com `ip route get 192.168.0.8` e ajustar `--interface`. Gloo
 pode abrir conexoes TCP adicionais entre os ranks; o firewall deve permitir
 trafego TCP entre `192.168.0.8` e `192.168.0.11`, nao apenas a porta de
 rendezvous `29500`.
+
+O enlace medido com iperf3 atingiu aproximadamente 624 Mbit/s sem retransmissoes.
+Nesse throughput, 7 KB levam cerca de 0.09 ms para transmitir; tempos de
+comunicacao muito maiores sao latencia/sincronizacao do collective, nao falta de
+banda sustentada.
