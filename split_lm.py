@@ -2,6 +2,7 @@ import argparse, io, json, logging, socket, struct, sys, threading, time, warnin
 import torch
 from safetensors import safe_open
 from huggingface_hub import hf_hub_download
+from transformers.cache_utils import DynamicCache
 from transformers import AutoConfig, AutoModelForCausalLM
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(message)s")
@@ -129,9 +130,19 @@ def _build(model_name, layer_start, layer_end, n_total, device):
     return model
 
 
-def _causal_mask(seq_len, dev, dtype):
-    m = torch.full((seq_len, seq_len), float("-inf"), device=dev, dtype=dtype)
-    return torch.triu(m, diagonal=1).unsqueeze(0).unsqueeze(0)
+def _causal_mask(seq_len, dev, dtype, key_len=None, pos_start=0):
+    key_len = key_len or seq_len
+    query_pos = torch.arange(pos_start, pos_start + seq_len, device=dev).unsqueeze(1)
+    key_pos = torch.arange(key_len, device=dev).unsqueeze(0)
+    blocked = key_pos > query_pos
+    mask = torch.zeros((seq_len, key_len), device=dev, dtype=dtype)
+    return mask.masked_fill(blocked, float("-inf")).unsqueeze(0).unsqueeze(0)
+
+
+def _new_cache_state(enabled):
+    if not enabled:
+        return None
+    return {"cache": DynamicCache(), "pos": 0}
 
 
 def _recvall(s, n):
@@ -231,33 +242,46 @@ def _recv_token(srv_tok, tok, device):
             tok = srv_tok.accept()[0]
 
 
-def _send_head_state(conn, ids, head_model, device, stats):
+def _send_head_state(conn, ids, head_model, device, stats, cache_state):
+    chunk = ids if cache_state is None else ids[:, cache_state["pos"]:]
     if head_model is None:
         start = time.perf_counter()
-        _send(conn, ids)
+        _send(conn, chunk)
         _stat_add(stats, "send", time.perf_counter() - start)
+        if cache_state is not None:
+            cache_state["pos"] += chunk.shape[1]
         return
     start = time.perf_counter()
-    hidden = _forward(head_model, None, device, True, False, ids)
+    hidden = _forward(head_model, None, device, True, False, chunk,
+                      cache_state)
     _stat_add(stats, "forward", time.perf_counter() - start)
     start = time.perf_counter()
     _send(conn, hidden)
     _stat_add(stats, "send", time.perf_counter() - start)
+    if cache_state is not None:
+        cache_state["pos"] += chunk.shape[1]
 
 
-def _forward(model, hidden, dev, is_head, is_last, input_ids=None):
+def _forward(model, hidden, dev, is_head, is_last, input_ids=None,
+             cache_state=None):
     with torch.no_grad():
         if is_head:
             hidden = model.model.embed_tokens(input_ids)
             seq_len = input_ids.shape[1]
         else:
             seq_len = hidden.shape[1]
-        pos = torch.arange(seq_len, device=dev).unsqueeze(0)
+        pos_start = cache_state["pos"] if cache_state is not None else 0
+        key_len = pos_start + seq_len
+        pos = torch.arange(pos_start, key_len, device=dev).unsqueeze(0)
         cos, sin = model.model.rotary_emb(hidden, pos)
         pe = (cos, sin)
-        mask = _causal_mask(seq_len, dev, hidden.dtype)
+        mask = _causal_mask(seq_len, dev, hidden.dtype, key_len, pos_start)
+        cache_pos = torch.arange(pos_start, key_len, device=dev)
         for layer in model.model.layers:
-            hidden = layer(hidden, position_embeddings=pe, attention_mask=mask)
+            hidden = layer(hidden, position_embeddings=pe, attention_mask=mask,
+                           past_key_values=cache_state["cache"] if cache_state else None,
+                           use_cache=cache_state is not None,
+                           cache_position=cache_pos)
         if is_last:
             hidden = model.model.norm(hidden)
             return model.lm_head(hidden)
@@ -299,10 +323,11 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
             ids = _prompt_ids(tokenizer, prompt, device, history)
             log.info("HEAD: %d tokens", ids.shape[1])
             stats = {"total": 0.0} if profiling else None
+            cache_state = _new_cache_state(False)
             out_tokens = []
             total_start = time.perf_counter()
             for step in range(max_new):
-                _send_head_state(conn, ids, head_model, device, stats)
+                _send_head_state(conn, ids, head_model, device, stats, cache_state)
                 if errors: raise RuntimeError(errors[-1])
                 start = time.perf_counter()
                 token, tok = _recv_token(srv_tok, tok, device)
@@ -327,10 +352,11 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
         ids = _prompt_ids(tokenizer, prompt, device)
         log.info("HEAD: %r -> %d tokens", prompt, ids.shape[1])
         stats = {"total": 0.0} if profiling else None
+        cache_state = _new_cache_state(profiling)
         out_tokens = []
         total_start = time.perf_counter()
         for step in range(max_new):
-            _send_head_state(conn, ids, head_model, device, stats)
+            _send_head_state(conn, ids, head_model, device, stats, cache_state)
             if errors: raise RuntimeError(errors[-1])
             start = time.perf_counter()
             token, tok = _recv_token(srv_tok, tok, device)
@@ -405,6 +431,7 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
     try:
         step = 0
         stats = {"total": 0.0} if profiling else None
+        cache_state = _new_cache_state(profiling)
         total_start = time.perf_counter()
         while True:
             step += 1
@@ -415,12 +442,19 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
                 ids = _recv(upstream, device)
                 _stat_add(stats, "recv", time.perf_counter() - start)
                 start = time.perf_counter()
-                h = _forward(model, None, device, True, is_last, ids)
+                h = _forward(model, None, device, True, is_last, ids,
+                             cache_state)
+                if cache_state is not None:
+                    cache_state["pos"] += ids.shape[1]
             else:
                 h = _recv(upstream, device)
+                recv_len = h.shape[1]
                 _stat_add(stats, "recv", time.perf_counter() - start)
                 start = time.perf_counter()
-                h = _forward(model, h, device, False, is_last)
+                h = _forward(model, h, device, False, is_last,
+                             cache_state=cache_state)
+                if cache_state is not None:
+                    cache_state["pos"] += recv_len
             _stat_add(stats, "forward", time.perf_counter() - start)
 
             if is_last:
@@ -482,6 +516,9 @@ def main():
     ap.add_argument("--interactive", action="store_true")
     ap.add_argument("--verbose", action="store_true", help="mostra logs INFO tambem no head")
     args = ap.parse_args()
+
+    if args.profiling and args.interactive:
+        raise ValueError("--profiling mede uma request; remova --interactive")
 
     def _parse(s):
         if not s: return None
