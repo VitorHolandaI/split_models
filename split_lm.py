@@ -391,13 +391,15 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
                 _send(token_back, nid.unsqueeze(0))
                 _stat_add(stats, "send_token", time.perf_counter() - start)
                 _stat_inc(stats, "tokens")
-                log.info("WORKER %s: step %d token %d", node_id, step, nid.item())
+                if not profiling:
+                    log.info("WORKER %s: step %d token %d", node_id, step, nid.item())
             else:
                 start = time.perf_counter()
                 _send(downstream, h)
                 _stat_add(stats, "send_downstream", time.perf_counter() - start)
                 _stat_inc(stats, "tokens")
-                log.info("WORKER %s: step %d encaminhado", node_id, step)
+                if not profiling:
+                    log.info("WORKER %s: step %d encaminhado", node_id, step)
     except ConnectionError as exc:
         if str(exc) != "fechou":
             _send_error(control, node_id, "run", exc)
