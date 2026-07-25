@@ -6,6 +6,15 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(message)s")
 log = logging.getLogger("split_lm")
+SUPPORTED_MODEL_TYPES = {"qwen2", "llama"}
+
+
+def _check_supported_config(config):
+    model_type = getattr(config, "model_type", None)
+    if model_type in SUPPORTED_MODEL_TYPES:
+        return
+    expected = ", ".join(sorted(SUPPORTED_MODEL_TYPES))
+    raise ValueError(f"modelo {model_type!r} nao suportado; esperado um de: {expected}")
 
 
 def _stat_add(stats, key, seconds):
@@ -98,6 +107,7 @@ def _weight_paths(model_name, layer_start, layer_end, n_total):
 
 def _build(model_name, layer_start, layer_end, n_total, device):
     cfg = AutoConfig.from_pretrained(model_name)
+    _check_supported_config(cfg)
     cfg.num_hidden_layers = layer_end - layer_start
     model = AutoModelForCausalLM.from_config(cfg)
     w = _load_weights(model_name, layer_start, layer_end, n_total, cfg)
@@ -483,6 +493,7 @@ def main():
     if t.pad_token is None: t.pad_token = t.eos_token
 
     cfg = AutoConfig.from_pretrained(args.model)
+    _check_supported_config(cfg)
     n_total = args.total_layers or cfg.num_hidden_layers
 
     if args.role == "head" and (args.layer_start is not None or args.layer_end is not None):
