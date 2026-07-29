@@ -46,9 +46,18 @@ class GenerationMetricsTest(unittest.TestCase):
 
         report = format_metrics(metrics)
 
-        self.assertIn("tok/s=1.00", report)
-        self.assertIn("total=2.000s", report)
-        self.assertIn("avg_inter_token=1000.0ms", report)
+        self.assertIn("tokens_per_second       1.00 tok/s", report)
+        self.assertIn("total_latency           2000.0 ms", report)
+        self.assertIn("average_inter_token     1000.0 ms", report)
+        self.assertGreaterEqual(len(report.splitlines()), 8)
+
+    def test_terminal_report_can_color_metric_values(self):
+        metrics = build_generation_metrics("split", "Qwen/test", 64, 1, 3, (2, 3), 1)
+
+        report = format_metrics(metrics, color=True)
+
+        self.assertIn("\033[1;36m", report)
+        self.assertIn("\033[1;32m1.00 tok/s\033[0m", report)
 
 
 if __name__ == "__main__":

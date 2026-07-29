@@ -64,12 +64,24 @@ def append_metrics(path: str | Path, metrics: GenerationMetrics) -> Path:
     return output
 
 
-def format_metrics(metrics: GenerationMetrics) -> str:
-    """Render the concise report shown after each generated message."""
-    return (
-        f"METRICS {metrics.mode} | prompt={metrics.prompt_tokens} tokens | "
-        f"generated={metrics.generated_tokens} | total={metrics.total_seconds:.3f}s | "
-        f"tok/s={metrics.tokens_per_second:.2f} | "
-        f"TTFT={metrics.time_to_first_token_seconds * 1000:.1f}ms | "
-        f"avg_inter_token={metrics.average_inter_token_seconds * 1000:.1f}ms"
-    )
+def _color(text: str, code: str, enabled: bool) -> str:
+    return f"\033[{code}m{text}\033[0m" if enabled else text
+
+
+def _metric_line(label: str, value: str, code: str, color: bool) -> str:
+    return f"{label:<24}{_color(value, f'1;{code}', color)}"
+
+
+def format_metrics(metrics: GenerationMetrics, color: bool = False) -> str:
+    """Render aligned, optionally colored, millisecond generation metrics."""
+    title = _color(f"=== GENERATION METRICS | {metrics.mode.upper()} ===", "1;36", color)
+    lines = [
+        title, "",
+        _metric_line("prompt_tokens", str(metrics.prompt_tokens), "34", color),
+        _metric_line("generated_tokens", str(metrics.generated_tokens), "34", color),
+        _metric_line("total_latency", f"{metrics.total_seconds * 1000:.1f} ms", "35", color),
+        _metric_line("time_to_first_token", f"{metrics.time_to_first_token_seconds * 1000:.1f} ms", "33", color),
+        _metric_line("average_inter_token", f"{metrics.average_inter_token_seconds * 1000:.1f} ms", "33", color),
+        _metric_line("tokens_per_second", f"{metrics.tokens_per_second:.2f} tok/s", "32", color),
+    ]
+    return "\n".join(lines)

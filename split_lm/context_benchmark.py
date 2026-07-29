@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 
+import torch
+
 from .metrics import GenerationMetrics
 
 
@@ -23,6 +25,16 @@ def parse_context_sizes(specification: str, max_context: int) -> tuple[int, ...]
     if sizes[-1] > max_context:
         raise ValueError(f"context_sizes={sizes}; esperado ultimo <= max_context={max_context}")
     return sizes
+
+
+def build_context_ids(tokenizer, target_tokens: int, device: str) -> torch.Tensor:
+    """Build a deterministic input with exactly the requested token count."""
+    seed = list(tokenizer("benchmark context", add_special_tokens=False).input_ids)
+    if not seed:
+        raise ValueError("tokenizer produziu seed vazio; esperado pelo menos um token")
+    repeats = (target_tokens + len(seed) - 1) // len(seed)
+    values = (seed * repeats)[:target_tokens]
+    return torch.tensor([values], dtype=torch.long, device=device)
 
 
 def _points(values: Sequence[float], left: int, top: int,
@@ -63,7 +75,7 @@ def _point_y(values: Sequence[float], value: float, top: int, height: int) -> fl
 def _svg(results: Sequence[GenerationMetrics]) -> str:
     contexts = [result.prompt_tokens for result in results]
     panels = (
-        ("Latencia total (s)", [result.total_seconds for result in results], 70, "#2563eb"),
+        ("Latencia total (ms)", [result.total_seconds * 1000 for result in results], 70, "#2563eb"),
         ("Tokens por segundo", [result.tokens_per_second for result in results], 270, "#16a34a"),
         ("Media entre tokens (ms)", [result.average_inter_token_seconds * 1000 for result in results], 470, "#ea580c"),
     )

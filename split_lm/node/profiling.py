@@ -22,32 +22,46 @@ def _format_bytes(value):
     return f"{value:.1f} GiB"
 
 
+def _color(text: str, code: str, enabled: bool) -> str:
+    return f"\033[{code}m{text}\033[0m" if enabled else text
+
+
+def _profile_value(label: str, value: str, code: str, color: bool) -> str:
+    return f"{label:<24}{_color(value, f'1;{code}', color)}"
+
+
+def _profile_step_line(key: str, seconds: float, total: float,
+                       color: bool) -> str:
+    pct = (seconds / total * 100.0) if total else 0.0
+    value = f"{seconds * 1000:.1f} ms ({pct:.1f}%)"
+    return _profile_value(key, value, "34", color)
+
+
+def _profile_lines(node: str, stats: dict[str, float | int],
+                   color: bool = False) -> list[str]:
+    total = float(stats.get("total", 0.0))
+    tokens = int(stats.get("tokens", 0))
+    rate = tokens / total if total else 0.0
+    average = total / tokens * 1000 if tokens else 0.0
+    lines = [
+        _color(f"=== PROFILE | {node.upper()} ===", "1;36", color), "",
+        _profile_value("generated_tokens", str(tokens), "34", color),
+        _profile_value("total_latency", f"{total * 1000:.1f} ms", "35", color),
+        _profile_value("average_per_token", f"{average:.1f} ms", "33", color),
+        _profile_value("tokens_per_second", f"{rate:.2f} tok/s", "32", color), "",
+    ]
+    for key in sorted(name for name in stats if name not in {"tokens", "total"}):
+        lines.append(_profile_step_line(key, float(stats[key]), total, color))
+    return lines
+
+
 def _profile_report(node, stats, net_stats=None):
     if not stats:
         return
-    total = stats.get("total", 0.0)
-    tokens = int(stats.get("tokens", 0))
-    tok_s = tokens / total if total else 0.0
-    ms_tok = total / tokens * 1000.0 if tokens else 0.0
-    print(f"PROFILE {node}: generated {tokens} tokens in {total:.3f}s ({tok_s:.2f} tok/s, {ms_tok:.1f} ms/token)", file=sys.stderr, flush=True)
-    for key in sorted(k for k in stats if k not in {"tokens", "total"}):
-        _profile_step_report(key, stats[key], total)
+    print("\n".join(_profile_lines(node, stats, sys.stderr.isatty())),
+          file=sys.stderr, flush=True)
     if net_stats is not None:
         _profile_network_report(net_stats)
-
-
-def _profile_step_report(key, seconds, total):
-    names = {
-        "forward": "ran this node's model layers",
-        "recv": "waited for hidden states from the previous node",
-        "recv_token": "waited for the final token from the tail node",
-        "send": "sent hidden states/input to the next node",
-        "send_downstream": "sent hidden states to the next worker",
-        "send_token": "sent the selected token back to the head",
-    }
-    pct = (seconds / total * 100.0) if total else 0.0
-    label = names.get(key, key.replace("_", " "))
-    print(f"PROFILE step: {label}: {seconds:.3f}s ({pct:.1f}% of total)", file=sys.stderr, flush=True)
 
 
 def _profile_network_report(net_stats):

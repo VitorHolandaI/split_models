@@ -2,7 +2,7 @@ import logging, socket, sys, threading, time
 from dataclasses import dataclass
 import torch
 
-from ..context_benchmark import write_context_outputs
+from ..context_benchmark import build_context_ids, write_context_outputs
 from ..io.network import _connect, _control_server, _wait_ready, _send_stop, _recv_token, _configure_connected_socket
 from ..io.protocol import _send, NetworkStats
 from ..metrics import (
@@ -36,16 +36,6 @@ def _prompt_ids(tokenizer, prompt, device, messages=None):
     if encoded is not None:
         return encoded["input_ids"].to(device)
     return tokenizer(prompt, return_tensors="pt").input_ids.to(device)
-
-
-def _context_ids(tokenizer, target_tokens: int, device: str) -> torch.Tensor:
-    """Build a deterministic input with exactly the requested token count."""
-    seed = list(tokenizer("benchmark context", add_special_tokens=False).input_ids)
-    if not seed:
-        raise ValueError("tokenizer produziu seed vazio; esperado pelo menos um token")
-    repeats = (target_tokens + len(seed) - 1) // len(seed)
-    values = (seed * repeats)[:target_tokens]
-    return torch.tensor([values], dtype=torch.long, device=device)
 
 
 @dataclass
@@ -119,7 +109,8 @@ def _record_response(model_name: str, prompt_tokens: int, worker_count: int,
         "split", model_name, prompt_tokens, response.started_at,
         response.finished_at, response.token_times, worker_count)
     append_metrics(metrics_file, metrics)
-    print(format_metrics(metrics), file=sys.stderr, flush=True)
+    print(format_metrics(metrics, color=sys.stderr.isatty()),
+          file=sys.stderr, flush=True)
     if response.stats is not None:
         _profile_report("head", response.stats, response.net_stats)
     return metrics
@@ -153,7 +144,7 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
         results = []
         csv_path = svg_path = None
         for context_size in context_sizes:
-            ids = _context_ids(tokenizer, context_size, device)
+            ids = build_context_ids(tokenizer, context_size, device)
             print(f"\nBENCHMARK context={context_size} generated_max={max_new}", flush=True)
             response = _generate_response(
                 tokenizer, ids, head_model, device, max_new, conn,

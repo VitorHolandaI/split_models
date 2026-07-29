@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from split_lm.node.head import _context_ids
+from split_lm.context_benchmark import build_context_ids
 
 
 class FakeBenchmarkTokenizer:
@@ -11,7 +11,7 @@ class FakeBenchmarkTokenizer:
 
 class HeadBenchmarkTest(unittest.TestCase):
     def test_context_ids_repeat_seed_to_exact_requested_size(self):
-        ids = _context_ids(FakeBenchmarkTokenizer(), 8, "cpu")
+        ids = build_context_ids(FakeBenchmarkTokenizer(), 8, "cpu")
 
         self.assertEqual(tuple(ids.shape), (1, 8))
         self.assertEqual(ids.tolist()[0], [41, 42, 43, 41, 42, 43, 41, 42])

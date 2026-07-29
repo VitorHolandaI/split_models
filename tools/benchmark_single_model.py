@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import argparse
 import resource
+import sys
 import time
 from collections.abc import Callable
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from split_lm.metrics import append_metrics, build_generation_metrics, format_metrics
+from split_lm.context_benchmark import (
+    build_context_ids, parse_context_sizes, write_context_outputs)
+from split_lm.metrics import (
+    GenerationMetrics, append_metrics, build_generation_metrics, format_metrics)
 
 
 DTYPES: dict[str, object] = {
@@ -52,6 +56,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default="Write a poem about distributed computers.")
     parser.add_argument("--ignore-eos", action="store_true", help="force generation to use the full token budget")
     parser.add_argument("--metrics-file", default="benchmark-results/generation.jsonl")
+    parser.add_argument("--context-sizes", default=None,
+                        help="exact increasing contexts, ex 128,256,512")
+    parser.add_argument("--benchmark-output", default="benchmark-results/context-sweep-local")
     return parser.parse_args()
 
 
@@ -89,12 +96,8 @@ def max_rss_mb() -> float:
     return rss_kb / 1024.0
 
 
-def main() -> None:
-    args = parse_args()
-    tokenizer, model, load_seconds = load_model(args.model, args.device, args.dtype)
-    inputs = prompt_ids(tokenizer, args.prompt, args.device)
-    eos_token_id = None if args.ignore_eos else tokenizer.eos_token_id
-
+def _measure_generation(model, tokenizer, inputs: torch.Tensor,
+                        args: argparse.Namespace) -> tuple[torch.Tensor, GenerationMetrics]:
     streamer = TokenTimingStreamer()
     start = time.perf_counter()
     with torch.no_grad():
@@ -102,25 +105,55 @@ def main() -> None:
             inputs,
             max_new_tokens=args.max_new_tokens,
             do_sample=False,
-            eos_token_id=eos_token_id,
+            eos_token_id=None if args.ignore_eos or args.context_sizes else tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id,
             streamer=streamer,
         )
     finished = time.perf_counter()
-
     generated = output[0, inputs.shape[1]:]
-    token_count = int(generated.numel())
     metrics = build_generation_metrics(
         "local", args.model, int(inputs.shape[1]), start, finished,
         streamer.token_times, workers=0)
     append_metrics(args.metrics_file, metrics)
+    return generated, metrics
 
+
+def _print_measurement(generated: torch.Tensor, tokenizer,
+                       metrics: GenerationMetrics) -> None:
     print(tokenizer.decode(generated, skip_special_tokens=True))
+    print(format_metrics(metrics, color=sys.stdout.isatty()))
+
+
+def _run_context_sweep(args: argparse.Namespace, tokenizer, model) -> None:
+    maximum = int(model.config.max_position_embeddings) - args.max_new_tokens
+    assert isinstance(args.context_sizes, str)
+    contexts = parse_context_sizes(args.context_sizes, maximum)
+    results: list[GenerationMetrics] = []
+    csv_path = svg_path = None
+    for context in contexts:
+        print(f"\nBENCHMARK LOCAL context={context} generated_max={args.max_new_tokens}")
+        inputs = build_context_ids(tokenizer, context, args.device)
+        generated, metrics = _measure_generation(model, tokenizer, inputs, args)
+        _print_measurement(generated, tokenizer, metrics)
+        results.append(metrics)
+        csv_path, svg_path = write_context_outputs(results, args.benchmark_output)
+    assert csv_path is not None and svg_path is not None
+    print(f"BENCHMARK outputs: {csv_path} {svg_path}")
+
+
+def main() -> None:
+    args = parse_args()
+    tokenizer, model, load_seconds = load_model(args.model, args.device, args.dtype)
     print(f"MODEL {args.model}")
     print(f"DEVICE {args.device} dtype={args.dtype}")
-    print(f"PROMPT tokens={inputs.shape[1]} generated={token_count} max_new_tokens={args.max_new_tokens}")
     print(f"LOAD {load_seconds:.3f}s peak_rss={max_rss_mb():.1f} MiB")
-    print(format_metrics(metrics))
+    if args.context_sizes:
+        _run_context_sweep(args, tokenizer, model)
+        return
+    inputs = prompt_ids(tokenizer, args.prompt, args.device)
+    generated, metrics = _measure_generation(model, tokenizer, inputs, args)
+
+    _print_measurement(generated, tokenizer, metrics)
 
 
 if __name__ == "__main__":

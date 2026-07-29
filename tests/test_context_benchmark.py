@@ -25,7 +25,9 @@ class ContextBenchmarkTest(unittest.TestCase):
             csv_path, svg_path = write_context_outputs(results, prefix)
 
             self.assertIn("prompt_tokens", csv_path.read_text(encoding="utf-8"))
-            self.assertIn("<svg", svg_path.read_text(encoding="utf-8"))
+            svg = svg_path.read_text(encoding="utf-8")
+            self.assertIn("<svg", svg)
+            self.assertIn("Latencia total (ms)", svg)
             self.assertGreater(svg_path.stat().st_size, 500)
 
 
