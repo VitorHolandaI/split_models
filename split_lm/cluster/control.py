@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import socket
 import subprocess
@@ -14,6 +15,7 @@ from typing import Protocol
 from ..io.protocol import _recv_msg, _send_msg
 
 
+log = logging.getLogger("split_lm")
 _JOB_FIELDS = {
     "model", "layer_start", "layer_end", "total_layers", "listen_port",
     "control_to", "node_id", "connect_to", "token_back_to", "max_new_tokens",
@@ -197,7 +199,10 @@ def _serve_connection(connection: socket.socket, node_id: str,
         response, process = _handle_request(node_id, _recv_msg(connection), process, factory)
     except (JobValidationError, OSError, ValueError) as exc:
         response = {"type": "ERROR", "node": node_id, "message": str(exc)}
-    _send_msg(connection, response)
+    try:
+        _send_msg(connection, response)
+    except OSError as exc:
+        log.warning("cliente de controle desconectou antes da resposta: %s", exc)
     return process
 
 

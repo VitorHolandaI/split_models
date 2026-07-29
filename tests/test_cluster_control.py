@@ -107,6 +107,15 @@ class ControlAgentTest(unittest.TestCase):
         self.assertEqual(response["type"], "ERROR")
         self.assertIn("ja executa", str(response["message"]))
 
+    def test_empty_probe_does_not_stop_control_agent(self):
+        address = ("127.0.0.1", self.port)
+        with socket.create_connection(address):
+            pass
+
+        response = request_agent(address, {"type": "START", "job": sample_job().to_payload()})
+
+        self.assertEqual(response["type"], "STARTED")
+
 
 if __name__ == "__main__":
     unittest.main()
