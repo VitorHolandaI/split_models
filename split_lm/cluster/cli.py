@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import secrets
 import socket
 import threading
 from collections.abc import Sequence
@@ -39,9 +40,14 @@ def format_nodes(nodes: tuple[ClusterNode, ...]) -> str:
     return "\n".join([_HEADER, *rows])
 
 
+def random_node_id() -> str:
+    """Return an opaque worker identity for one agent process."""
+    return f"node-{secrets.token_hex(4)}"
+
+
 def _add_worker_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--node-id", default=socket.gethostname(),
-                        help="worker: identificador anunciado no discovery")
+    parser.add_argument("--node-id", default=random_node_id(),
+                        help="worker: identificador opcional; por padrao gera um aleatorio")
     parser.add_argument("--control-port", type=int, default=CONTROL_PORT,
                         help="worker: porta TCP onde o agente aceita jobs vertical")
     parser.add_argument("--discovery-port", type=int, default=DISCOVERY_PORT,
