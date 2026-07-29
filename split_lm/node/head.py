@@ -19,6 +19,13 @@ def _stream_token(tokenizer, token_id):
     sys.stdout.flush()
 
 
+def _read_prompt() -> str | None:
+    try:
+        return input(">>> ")
+    except EOFError:
+        return None
+
+
 def _prompt_ids(tokenizer, prompt, device, messages=None):
     encoded = tokenizer.apply_chat_template(
         messages or [{"role": "user", "content": prompt}],
@@ -162,8 +169,8 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
         print("\nChat. /exit pra sair.\n")
         history = []
         while True:
-            prompt = input(">>> ")
-            if prompt.strip() == "/exit": break
+            prompt = _read_prompt()
+            if prompt is None or prompt.strip() == "/exit": break
             history.append({"role": "user", "content": prompt})
             ids = _prompt_ids(tokenizer, prompt, device, history)
             log.info("HEAD: %d tokens", ids.shape[1])

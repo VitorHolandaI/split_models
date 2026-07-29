@@ -15,6 +15,11 @@ def _new_cache_state():
     return {"cache": DynamicCache(), "pos": 0}
 
 
+def _final_logits(model, hidden):
+    normalized = model.model.norm(hidden)
+    return model.lm_head(normalized[:, -1:, :])
+
+
 def _forward(model, hidden, dev, is_head, is_last, input_ids=None,
              cache_state=None):
     if cache_state is None:
@@ -39,6 +44,5 @@ def _forward(model, hidden, dev, is_head, is_last, input_ids=None,
                         cache_position=cache_pos)
             hidden = out[0] if isinstance(out, (tuple, list)) else out
         if is_last:
-            hidden = model.model.norm(hidden)
-            return model.lm_head(hidden)
+            return _final_logits(model, hidden)
     return hidden
