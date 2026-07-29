@@ -85,6 +85,8 @@ def _add_master_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--benchmark-output", default="benchmark-results/context-sweep")
     parser.add_argument("--precision", choices=RUNTIME_PRECISIONS, default="bfloat16")
     parser.add_argument("--warmup-runs", type=int, default=0)
+    parser.add_argument("--prompt", default=None,
+                        help="natural prompt benchmark; profile values override this")
 
 
 def _add_profile_arguments(parser: argparse.ArgumentParser,
@@ -178,7 +180,8 @@ def _run_master(args: argparse.Namespace) -> None:
         args.model, int(config.num_hidden_layers), head_address, workers,
         args.max_new_tokens, args.ready_timeout, context_sizes=context_sizes,
         metrics_file=args.metrics_file, benchmark_output=args.benchmark_output,
-        precision=args.precision, warmup_runs=args.warmup_runs)
+        precision=args.precision, warmup_runs=args.warmup_runs,
+        benchmark_prompt=args.prompt)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

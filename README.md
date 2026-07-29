@@ -125,6 +125,22 @@ For a more realistic response length, use `context-realistic`. It generates
 128 tokens per context; `context-quick` remains the short 16-token regression
 for quickly comparing TTFT after code changes.
 
+The `context-*` profiles use exact synthetic repeated-token inputs to isolate
+context scaling. For natural model behavior, use `poem-realistic`; it sends the
+same chat-template poem request to the local model and the split cluster:
+
+```bash
+uv run split-cluster benchmark-local --benchmark-profile poem-realistic
+```
+
+```bash
+uv run split-cluster master \
+  --discover \
+  --broadcast 192.168.0.255 \
+  --head-address 192.168.0.7 \
+  --benchmark-profile poem-realistic
+```
+
 The loader first loads each slice in BF16 and then quantizes that slice. Peak
 loading memory can therefore exceed steady-state quantized memory. Hidden
 states and KV cache remain BF16. INT8/INT4 reduce weight memory but are not

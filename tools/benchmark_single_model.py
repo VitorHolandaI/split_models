@@ -161,6 +161,18 @@ def _run_context_sweep(args: argparse.Namespace, tokenizer, model) -> None:
     print(f"BENCHMARK outputs: {csv_path} {svg_path}")
 
 
+def _run_prompt_benchmark(args: argparse.Namespace, tokenizer, model) -> None:
+    inputs = prompt_ids(tokenizer, args.prompt, args.device)
+    for warmup in range(args.warmup_runs):
+        print(f"\nWARMUP LOCAL {warmup + 1}/{args.warmup_runs}")
+        _measure_generation(model, tokenizer, inputs, args, record=False)
+    generated, metrics = _measure_generation(model, tokenizer, inputs, args)
+    _print_measurement(generated, tokenizer, metrics)
+    if args.benchmark_profile:
+        csv_path, svg_path = write_context_outputs([metrics], args.benchmark_output)
+        print(f"BENCHMARK outputs: {csv_path} {svg_path}")
+
+
 def main() -> None:
     args = parse_args()
     if args.benchmark_profile:
@@ -175,10 +187,7 @@ def main() -> None:
     if args.context_sizes:
         _run_context_sweep(args, tokenizer, model)
         return
-    inputs = prompt_ids(tokenizer, args.prompt, args.device)
-    generated, metrics = _measure_generation(model, tokenizer, inputs, args)
-
-    _print_measurement(generated, tokenizer, metrics)
+    _run_prompt_benchmark(args, tokenizer, model)
 
 
 if __name__ == "__main__":

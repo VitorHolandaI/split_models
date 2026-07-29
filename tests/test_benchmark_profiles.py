@@ -12,6 +12,7 @@ VALID_TOML = """
 description = "Quick context sweep"
 model = "Qwen/Qwen2.5-3B-Instruct"
 context_sizes = [128, 256, 512]
+prompt = ""
 max_new_tokens = 16
 warmup_runs = 1
 precision = "bfloat16"
@@ -34,6 +35,16 @@ class BenchmarkProfileTest(unittest.TestCase):
         self.assertEqual(profile.max_new_tokens, 16)
         self.assertEqual(profile.warmup_runs, 1)
         self.assertEqual(profile.precision, "bfloat16")
+
+    def test_natural_prompt_profile_can_omit_context_sweep(self):
+        prompt_profile = (VALID_TOML
+                          .replace("context_sizes = [128, 256, 512]", "context_sizes = []")
+                          .replace('prompt = ""', 'prompt = "Write a poem about distributed systems."'))
+
+        profile = self._load(prompt_profile)["context-quick"]
+
+        self.assertEqual(profile.context_sizes, ())
+        self.assertIn("poem", profile.prompt)
 
     def test_unknown_precision_reports_profile_and_allowed_values(self):
         invalid = VALID_TOML.replace('precision = "bfloat16"', 'precision = "int3"')
@@ -70,6 +81,7 @@ class BenchmarkProfileTest(unittest.TestCase):
 
         self.assertEqual(overrides["metrics_file"], "benchmark-results/generation.jsonl")
         self.assertEqual(overrides["benchmark_output"], "benchmark-results/context-quick-local")
+        self.assertEqual(overrides["prompt"], "")
 
 
 if __name__ == "__main__":

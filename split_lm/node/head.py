@@ -194,15 +194,23 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
         prompt = prompt_text
         ids = _prompt_ids(tokenizer, prompt, device)
         log.info("HEAD: %r -> %d tokens", prompt, ids.shape[1])
+        for warmup in range(warmup_runs):
+            print(f"\nWARMUP {warmup + 1}/{warmup_runs}", flush=True)
+            response = _generate_response(
+                tokenizer, ids, head_model, device, max_new, conn,
+                srv_tok, tok, errors, False, False)
+            tok = response.token_socket
         response = _generate_response(
             tokenizer, ids, head_model, device, max_new, conn,
             srv_tok, tok, errors, profiling, not profiling)
         tok = response.token_socket
         if profiling:
             print(tokenizer.decode(response.tokens))
-        _record_response(
+        metrics = _record_response(
             model_name, int(ids.shape[1]), worker_count, metrics_file,
             response, precision)
+        csv_path, svg_path = write_context_outputs([metrics], benchmark_output)
+        print(f"BENCHMARK outputs: {csv_path} {svg_path}", flush=True)
         sys.stdout.write("\n")
         sys.stdout.flush()
 

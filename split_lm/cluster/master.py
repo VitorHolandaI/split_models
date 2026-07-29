@@ -45,6 +45,7 @@ def head_command(model: str, total_layers: int, layers: tuple[int, int],
                  benchmark_output: str = "benchmark-results/context-sweep",
                  precision: str = "bfloat16",
                  warmup_runs: int = 0,
+                 benchmark_prompt: str | None = None,
                  executable: str = sys.executable) -> list[str]:
     """Build the local interactive head command for a vertical plan."""
     start, end = layers
@@ -59,6 +60,9 @@ def head_command(model: str, total_layers: int, layers: tuple[int, int],
     ]
     if context_sizes:
         return command + ["--context-sizes", ",".join(map(str, context_sizes)),
+                          "--benchmark-output", benchmark_output, "--profiling"]
+    if benchmark_prompt:
+        return command + ["--prompt", benchmark_prompt,
                           "--benchmark-output", benchmark_output, "--profiling"]
     return command + ["--interactive"]
 
@@ -107,7 +111,8 @@ def run_vertical_cluster(model: str, total_layers: int, head_address: str,
                          metrics_file: str = "benchmark-results/generation.jsonl",
                          benchmark_output: str = "benchmark-results/context-sweep",
                          precision: str = "bfloat16",
-                         warmup_runs: int = 0) -> None:
+                         warmup_runs: int = 0,
+                         benchmark_prompt: str | None = None) -> None:
     """Start discovered workers, run interactive head, then stop remote jobs."""
     plan = build_vertical_plan(total_layers, head_address, workers)
     started: list[WorkerAssignment] = []
@@ -117,6 +122,6 @@ def run_vertical_cluster(model: str, total_layers: int, head_address: str,
         runner(head_command(model, total_layers, plan.head_layers, plan.first_worker,
                             len(plan.workers), max_new_tokens, ready_timeout,
                             context_sizes, metrics_file, benchmark_output,
-                            precision, warmup_runs))
+                            precision, warmup_runs, benchmark_prompt))
     finally:
         _stop_workers(started, requester)

@@ -62,6 +62,16 @@ class MasterJobTest(unittest.TestCase):
         self.assertIn("--context-sizes", command)
         self.assertIn("128,256", command)
 
+    def test_natural_prompt_benchmark_is_non_interactive(self):
+        command = head_command(
+            "Qwen/Qwen2.5-3B-Instruct", 36, (0, 18), "10.66.66.8:9999", 1,
+            128, 300, benchmark_prompt="Write a poem.", executable="/venv/python")
+
+        self.assertNotIn("--interactive", command)
+        self.assertIn("--prompt", command)
+        self.assertIn("Write a poem.", command)
+        self.assertIn("--profiling", command)
+
     def test_cluster_starts_workers_runs_head_and_stops_workers(self):
         requester = FakeAgentRequester()
         runner = FakeHeadRunner()

@@ -28,6 +28,17 @@ precision = "bfloat16"
 metrics_file = "benchmark-results/context-realistic.jsonl"
 output_prefix = "benchmark-results/context-realistic"
 
+[profiles.poem-realistic]
+description = "Natural chat-template poem generation benchmark"
+model = "Qwen/Qwen2.5-3B-Instruct"
+context_sizes = []
+prompt = "Write a thoughtful poem in English about distributed computers working together across a network."
+max_new_tokens = 128
+warmup_runs = 1
+precision = "bfloat16"
+metrics_file = "benchmark-results/poem-realistic.jsonl"
+output_prefix = "benchmark-results/poem-realistic"
+
 [profiles.decode-long]
 description = "Sustained BF16 decode at one fixed prompt size"
 model = "Qwen/Qwen2.5-3B-Instruct"
