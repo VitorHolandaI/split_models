@@ -61,6 +61,8 @@ def _add_worker_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_discovery_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--discovery-port", type=int, default=DISCOVERY_PORT,
+                        help="porta UDP de discovery, igual em todos os nos")
     parser.add_argument("--timeout", type=float, default=2.0,
                         help="nodes: segundos esperando respostas do discovery")
     # 255.255.255.255 sai pela rota default; com VPN (wg0 /32) na frente da LAN
@@ -81,19 +83,35 @@ def _add_master_arguments(parser: argparse.ArgumentParser) -> None:
                         help="benchmark: contextos crescentes, ex 128,256,512")
     parser.add_argument("--metrics-file", default="benchmark-results/generation.jsonl")
     parser.add_argument("--benchmark-output", default="benchmark-results/context-sweep")
-    parser.add_argument("--benchmark-config", default="benchmarks.toml")
-    parser.add_argument("--benchmark-profile", default=None)
     parser.add_argument("--precision", choices=RUNTIME_PRECISIONS, default="bfloat16")
     parser.add_argument("--warmup-runs", type=int, default=0)
 
 
+def _add_profile_arguments(parser: argparse.ArgumentParser,
+                           required: bool = False) -> None:
+    parser.add_argument("--benchmark-config", default="benchmarks.toml",
+                        help="TOML containing named benchmark profiles")
+    parser.add_argument("--benchmark-profile", required=required,
+                        help="profile name shown by `split-cluster benchmarks`")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="split-cluster", description="cluster split LLM")
-    parser.add_argument(
-        "role", choices=["worker", "nodes", "master", "benchmarks", "benchmark-local"])
-    _add_worker_arguments(parser)
-    _add_discovery_arguments(parser)
-    _add_master_arguments(parser)
+    commands = parser.add_subparsers(dest="role", required=True, title="commands")
+    worker = commands.add_parser("worker", help="wait for vertical jobs")
+    _add_worker_arguments(worker)
+    nodes = commands.add_parser("nodes", help="list discovered workers")
+    _add_discovery_arguments(nodes)
+    master = commands.add_parser("master", help="run interactive or benchmark split")
+    _add_discovery_arguments(master)
+    _add_master_arguments(master)
+    _add_profile_arguments(master)
+    profiles = commands.add_parser("benchmarks", help="list named benchmark profiles")
+    profiles.add_argument("--benchmark-config", default="benchmarks.toml")
+    local = commands.add_parser(
+        "benchmark-local", help="run a profile locally",
+        description="Run one named profile on a full local model")
+    _add_profile_arguments(local, required=True)
     return parser
 
 

@@ -1,8 +1,11 @@
+import contextlib
+import io
 import threading
 import unittest
 
 from split_lm.cluster.cli import (
-    format_nodes, local_benchmark_command, random_node_id, source_address_for)
+    _build_parser, format_nodes, local_benchmark_command, random_node_id,
+    source_address_for)
 from split_lm.cluster.discovery import (
     DiscoveryReplyError, decode_reply, discover_nodes, encode_reply, local_node,
     serve_discovery)
@@ -76,6 +79,17 @@ class DiscoveryReplyTest(unittest.TestCase):
 
 
 class NodeTableTest(unittest.TestCase):
+    def test_local_benchmark_help_is_specific_to_that_command(self):
+        output = io.StringIO()
+
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(output):
+            _build_parser().parse_args(["benchmark-local", "--help"])
+
+        help_text = output.getvalue()
+        self.assertIn("Run one named profile on a full local model", help_text)
+        self.assertIn("--benchmark-profile", help_text)
+        self.assertNotIn("--broadcast", help_text)
+
     def test_local_benchmark_command_uses_shared_profile_file(self):
         command = local_benchmark_command(
             "benchmarks.toml", "context-realistic", executable="/venv/python")
