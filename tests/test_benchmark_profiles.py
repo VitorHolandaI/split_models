@@ -52,6 +52,7 @@ class BenchmarkProfileTest(unittest.TestCase):
 
         self.assertIn("context-quick", output)
         self.assertIn("bfloat16", output)
+        self.assertIn("Qwen/Qwen2.5-3B-Instruct", output)
         self.assertIn("128,256,512", output)
 
     def test_missing_profile_lists_available_names(self):

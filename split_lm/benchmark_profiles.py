@@ -122,10 +122,11 @@ def profile_overrides(profile: BenchmarkProfile,
 
 def format_profiles(profiles: dict[str, BenchmarkProfile]) -> str:
     """Render profiles in a compact operator-facing table."""
-    header = f"{'PROFILE':<22} {'PRECISION':<10} {'WARMUP':>6} {'GENERATE':>8} CONTEXTS"
+    header = (f"{'PROFILE':<22} {'PRECISION':<10} {'WARMUP':>6} "
+              f"{'GENERATE':>8} {'MODEL':<32} CONTEXTS")
     rows = [
         f"{profile.name:<22} {profile.precision:<10} {profile.warmup_runs:>6} "
-        f"{profile.max_new_tokens:>8} "
+        f"{profile.max_new_tokens:>8} {profile.model:<32} "
         f"{','.join(map(str, profile.context_sizes))}"
         for profile in profiles.values()
     ]

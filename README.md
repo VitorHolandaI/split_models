@@ -85,7 +85,7 @@ uv run split-cluster benchmarks
 Run the exact same profile locally:
 
 ```bash
-uv run python tools/benchmark_single_model.py \
+uv run split-cluster benchmark-local \
   --benchmark-profile context-quick
 ```
 

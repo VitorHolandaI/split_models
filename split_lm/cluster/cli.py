@@ -6,6 +6,8 @@ import argparse
 import logging
 import secrets
 import socket
+import subprocess
+import sys
 import threading
 from collections.abc import Sequence
 
@@ -87,7 +89,8 @@ def _add_master_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="split-cluster", description="cluster split LLM")
-    parser.add_argument("role", choices=["worker", "nodes", "master", "benchmarks"])
+    parser.add_argument(
+        "role", choices=["worker", "nodes", "master", "benchmarks", "benchmark-local"])
     _add_worker_arguments(parser)
     _add_discovery_arguments(parser)
     _add_master_arguments(parser)
@@ -99,6 +102,24 @@ def source_address_for(remote_address: str) -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.connect((remote_address, DISCOVERY_PORT))
         return str(probe.getsockname()[0])
+
+
+def local_benchmark_command(config: str, profile: str,
+                            executable: str = sys.executable) -> list[str]:
+    """Build the local runner command for one shared benchmark profile."""
+    return [
+        executable, "-m", "tools.benchmark_single_model",
+        "--benchmark-config", config, "--benchmark-profile", profile,
+    ]
+
+
+def _run_local_benchmark(args: argparse.Namespace) -> None:
+    if not args.benchmark_profile:
+        raise ValueError(
+            "benchmark-local exige --benchmark-profile; use split-cluster benchmarks")
+    load_profile(args.benchmark_config, args.benchmark_profile)
+    subprocess.run(local_benchmark_command(
+        args.benchmark_config, args.benchmark_profile), check=True)
 
 
 def _run_worker_agent(args: argparse.Namespace) -> None:
@@ -150,6 +171,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
     if args.role == "benchmarks":
         print(format_profiles(load_profiles(args.benchmark_config)))
+        return
+    if args.role == "benchmark-local":
+        _run_local_benchmark(args)
         return
     if args.role == "nodes":
         print(format_nodes(

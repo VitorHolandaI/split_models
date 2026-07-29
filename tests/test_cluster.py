@@ -1,7 +1,8 @@
 import threading
 import unittest
 
-from split_lm.cluster.cli import format_nodes, random_node_id, source_address_for
+from split_lm.cluster.cli import (
+    format_nodes, local_benchmark_command, random_node_id, source_address_for)
 from split_lm.cluster.discovery import (
     DiscoveryReplyError, decode_reply, discover_nodes, encode_reply, local_node,
     serve_discovery)
@@ -75,6 +76,14 @@ class DiscoveryReplyTest(unittest.TestCase):
 
 
 class NodeTableTest(unittest.TestCase):
+    def test_local_benchmark_command_uses_shared_profile_file(self):
+        command = local_benchmark_command(
+            "benchmarks.toml", "context-realistic", executable="/venv/python")
+
+        self.assertEqual(command[:3], ["/venv/python", "-m", "tools.benchmark_single_model"])
+        self.assertIn("benchmarks.toml", command)
+        self.assertIn("context-realistic", command)
+
     def test_default_worker_ids_are_random_and_safe(self):
         first = random_node_id()
         second = random_node_id()
