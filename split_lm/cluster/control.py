@@ -13,12 +13,14 @@ from dataclasses import asdict, dataclass
 from typing import Protocol
 
 from ..io.protocol import _recv_msg, _send_msg
+from ..benchmark_profiles import RUNTIME_PRECISIONS
 
 
 log = logging.getLogger("split_lm")
 _JOB_FIELDS = {
     "model", "layer_start", "layer_end", "total_layers", "listen_port",
     "control_to", "node_id", "connect_to", "token_back_to", "max_new_tokens",
+    "precision",
 }
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$")
@@ -92,6 +94,7 @@ class VerticalJob:
     connect_to: str | None
     token_back_to: str | None
     max_new_tokens: int
+    precision: str
 
     def to_payload(self) -> dict[str, object]:
         """Serialize this validated job for a control request."""
@@ -114,6 +117,7 @@ class VerticalJob:
             _text(payload, "node_id"), _optional_text(payload, "connect_to"),
             _optional_text(payload, "token_back_to"),
             _integer(payload, "max_new_tokens"),
+            _text(payload, "precision"),
         )
         job.validate()
         return job
@@ -134,6 +138,9 @@ class VerticalJob:
             raise JobValidationError(
                 f"model={self.model!r}, node_id={self.node_id!r}; esperado nomes seguros"
             )
+        if self.precision not in RUNTIME_PRECISIONS:
+            raise JobValidationError(
+                f"precision={self.precision!r}; esperado um de {RUNTIME_PRECISIONS}")
         for field in ("control_to", "connect_to", "token_back_to"):
             value = getattr(self, field)
             if value is not None:
@@ -148,6 +155,7 @@ def worker_command(job: VerticalJob, executable: str = sys.executable) -> list[s
         str(job.max_new_tokens), "worker", "--layer-start", str(job.layer_start),
         "--layer-end", str(job.layer_end), "--port", str(job.listen_port),
         "--control-to", job.control_to, "--node-id", job.node_id,
+        "--precision", job.precision,
     ]
     if job.connect_to:
         command.extend(["--connect", job.connect_to])

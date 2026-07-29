@@ -41,6 +41,7 @@ class MasterJobTest(unittest.TestCase):
         self.assertEqual(job.layer_end, 24)
         self.assertEqual(job.node_id, "node-2")
         self.assertEqual(job.token_back_to, "10.66.66.14:9999")
+        self.assertEqual(job.precision, "bfloat16")
 
     def test_head_command_runs_the_first_slice_interactively(self):
         command = head_command(

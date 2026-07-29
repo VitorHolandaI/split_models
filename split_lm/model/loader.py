@@ -1,4 +1,6 @@
 import json
+import importlib.util
+import torch
 from safetensors import safe_open
 from huggingface_hub import hf_hub_download
 from transformers import AutoConfig, AutoModelForCausalLM
@@ -90,16 +92,42 @@ def _drop_unused_modules(model, is_head, is_last):
         model.lm_head = None
 
 
-def _model_init_kwargs(config) -> dict[str, object]:
-    dtype = getattr(config, "dtype", None)
+def _model_init_kwargs(config, precision: str) -> dict[str, object]:
+    explicit = {"bfloat16": torch.bfloat16, "float32": torch.float32}
+    dtype = explicit.get(precision, getattr(config, "dtype", None))
     return {"dtype": dtype} if dtype is not None else {}
 
 
-def _build(model_name, layer_start, layer_end, n_total, device):
+def _ensure_precision_available(precision: str) -> None:
+    if precision in {"int8", "int4"} and importlib.util.find_spec("torchao") is None:
+        raise RuntimeError(
+            f"precision={precision} requer TorchAO CPU; execute uv sync --extra quant")
+
+
+def _quantize_model(model, precision: str, device: str):
+    if precision not in {"int8", "int4"}:
+        return model
+    if device != "cpu":
+        raise ValueError(f"precision={precision}, device={device!r}; esperado device='cpu'")
+    try:
+        from torchao.prototype.quantization.int4 import Int4WeightOnlyOpaqueTensorConfig
+        from torchao.quantization import Int8WeightOnlyConfig, quantize_
+    except ImportError as exc:
+        raise RuntimeError(
+            f"precision={precision} requer TorchAO CPU; execute uv sync --extra quant") from exc
+    config = (Int8WeightOnlyConfig(version=2) if precision == "int8" else
+              Int4WeightOnlyOpaqueTensorConfig(group_size=128))
+    quantize_(model, config)
+    return model
+
+
+def _build(model_name, layer_start, layer_end, n_total, device,
+           precision="auto"):
+    _ensure_precision_available(precision)
     cfg = AutoConfig.from_pretrained(model_name)
     _check_supported_config(cfg)
     cfg.num_hidden_layers = layer_end - layer_start
-    model = AutoModelForCausalLM.from_config(cfg, **_model_init_kwargs(cfg))
+    model = AutoModelForCausalLM.from_config(cfg, **_model_init_kwargs(cfg, precision))
     _drop_unused_modules(model, layer_start == 0, layer_end == n_total)
     w = _load_weights(model_name, layer_start, layer_end, n_total, cfg)
     _validate_loaded_weights(model, w, model_name, layer_start, layer_end,
@@ -110,4 +138,4 @@ def _build(model_name, layer_start, layer_end, n_total, device):
             f"pesos inesperados em {model_name!r}: {sorted(incompatible.unexpected_keys)}"
         )
     model = model.to(device).eval()
-    return model
+    return _quantize_model(model, precision, device)

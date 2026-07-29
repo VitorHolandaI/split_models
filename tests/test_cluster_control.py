@@ -4,7 +4,7 @@ import unittest
 from collections.abc import Sequence
 
 from split_lm.cluster.control import (
-    JobValidationError, VerticalJob, request_agent, serve_control,
+    JobValidationError, VerticalJob, _connect_agent, request_agent, serve_control,
     worker_command)
 
 
@@ -44,7 +44,7 @@ def sample_job() -> VerticalJob:
         total_layers=24, listen_port=9999,
         control_to="10.66.66.14:10001", node_id="node-2",
         connect_to=None, token_back_to="10.66.66.14:9999",
-        max_new_tokens=50,
+        max_new_tokens=50, precision="bfloat16",
     )
 
 
@@ -55,6 +55,7 @@ class WorkerCommandTest(unittest.TestCase):
         self.assertEqual(command[:3], ["/venv/python", "-m", "split_lm"])
         self.assertIn("worker", command)
         self.assertIn("--token-back-to", command)
+        self.assertIn("bfloat16", command)
         self.assertNotIn("sh", command)
 
     def test_job_rejects_unknown_shell_command_field(self):
@@ -109,7 +110,7 @@ class ControlAgentTest(unittest.TestCase):
 
     def test_empty_probe_does_not_stop_control_agent(self):
         address = ("127.0.0.1", self.port)
-        with socket.create_connection(address):
+        with _connect_agent(address, 1.0):
             pass
 
         response = request_agent(address, {"type": "START", "job": sample_job().to_payload()})

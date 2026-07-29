@@ -15,10 +15,13 @@ from collections.abc import Callable
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from split_lm.benchmark_profiles import (
+    RUNTIME_PRECISIONS, load_profile, profile_overrides)
 from split_lm.context_benchmark import (
     build_context_ids, parse_context_sizes, write_context_outputs)
 from split_lm.metrics import (
     GenerationMetrics, append_metrics, build_generation_metrics, format_metrics)
+from split_lm.model.loader import _ensure_precision_available, _quantize_model
 
 
 DTYPES: dict[str, object] = {
@@ -59,6 +62,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context-sizes", default=None,
                         help="exact increasing contexts, ex 128,256,512")
     parser.add_argument("--benchmark-output", default="benchmark-results/context-sweep-local")
+    parser.add_argument("--benchmark-config", default="benchmarks.toml")
+    parser.add_argument("--benchmark-profile", default=None)
+    parser.add_argument("--precision", choices=RUNTIME_PRECISIONS, default="auto")
+    parser.add_argument("--warmup-runs", type=int, default=0)
     return parser.parse_args()
 
 
@@ -79,15 +86,22 @@ def prompt_ids(tokenizer, prompt: str, device: str) -> torch.Tensor:
     return tokenizer(prompt, return_tensors="pt").input_ids.to(device)
 
 
-def load_model(model_name: str, device: str, dtype_name: str):
+def load_model(model_name: str, device: str, dtype_name: str,
+               precision: str = "auto"):
     """Load tokenizer and model, returning load time in seconds.
 
     Usage example:
         tokenizer, model, seconds = load_model("gpt2", "cpu", "auto")
     """
     start = time.perf_counter()
+    _ensure_precision_available(precision)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=DTYPES[dtype_name]).to(device).eval()
+    selected_dtype = precision if precision in {"bfloat16", "float32"} else dtype_name
+    if precision in {"int8", "int4"}:
+        selected_dtype = "bfloat16"
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, dtype=DTYPES[selected_dtype]).to(device).eval()
+    model = _quantize_model(model, precision, device)
     return tokenizer, model, time.perf_counter() - start
 
 
@@ -97,7 +111,8 @@ def max_rss_mb() -> float:
 
 
 def _measure_generation(model, tokenizer, inputs: torch.Tensor,
-                        args: argparse.Namespace) -> tuple[torch.Tensor, GenerationMetrics]:
+                        args: argparse.Namespace, record: bool = True
+                        ) -> tuple[torch.Tensor, GenerationMetrics]:
     streamer = TokenTimingStreamer()
     start = time.perf_counter()
     with torch.no_grad():
@@ -113,8 +128,9 @@ def _measure_generation(model, tokenizer, inputs: torch.Tensor,
     generated = output[0, inputs.shape[1]:]
     metrics = build_generation_metrics(
         "local", args.model, int(inputs.shape[1]), start, finished,
-        streamer.token_times, workers=0)
-    append_metrics(args.metrics_file, metrics)
+        streamer.token_times, workers=0, precision=args.precision)
+    if record:
+        append_metrics(args.metrics_file, metrics)
     return generated, metrics
 
 
@@ -130,6 +146,10 @@ def _run_context_sweep(args: argparse.Namespace, tokenizer, model) -> None:
     contexts = parse_context_sizes(args.context_sizes, maximum)
     results: list[GenerationMetrics] = []
     csv_path = svg_path = None
+    warmup_inputs = build_context_ids(tokenizer, contexts[0], args.device)
+    for warmup in range(args.warmup_runs):
+        print(f"\nWARMUP LOCAL {warmup + 1}/{args.warmup_runs}")
+        _measure_generation(model, tokenizer, warmup_inputs, args, record=False)
     for context in contexts:
         print(f"\nBENCHMARK LOCAL context={context} generated_max={args.max_new_tokens}")
         inputs = build_context_ids(tokenizer, context, args.device)
@@ -143,9 +163,14 @@ def _run_context_sweep(args: argparse.Namespace, tokenizer, model) -> None:
 
 def main() -> None:
     args = parse_args()
-    tokenizer, model, load_seconds = load_model(args.model, args.device, args.dtype)
+    if args.benchmark_profile:
+        profile = load_profile(args.benchmark_config, args.benchmark_profile)
+        for name, value in profile_overrides(profile, local=True).items():
+            setattr(args, name, value)
+    tokenizer, model, load_seconds = load_model(
+        args.model, args.device, args.dtype, args.precision)
     print(f"MODEL {args.model}")
-    print(f"DEVICE {args.device} dtype={args.dtype}")
+    print(f"DEVICE {args.device} precision={args.precision} dtype={args.dtype}")
     print(f"LOAD {load_seconds:.3f}s peak_rss={max_rss_mb():.1f} MiB")
     if args.context_sizes:
         _run_context_sweep(args, tokenizer, model)

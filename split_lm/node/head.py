@@ -104,10 +104,12 @@ def _generate_response(tokenizer, ids, head_model, device, max_new, conn,
 
 
 def _record_response(model_name: str, prompt_tokens: int, worker_count: int,
-                     metrics_file: str, response: GeneratedResponse) -> GenerationMetrics:
+                     metrics_file: str, response: GeneratedResponse,
+                     precision: str) -> GenerationMetrics:
     metrics = build_generation_metrics(
         "split", model_name, prompt_tokens, response.started_at,
-        response.finished_at, response.token_times, worker_count)
+        response.finished_at, response.token_times, worker_count,
+        precision=precision)
     append_metrics(metrics_file, metrics)
     print(format_metrics(metrics, color=sys.stderr.isatty()),
           file=sys.stderr, flush=True)
@@ -119,7 +121,8 @@ def _record_response(model_name: str, prompt_tokens: int, worker_count: int,
 def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
              worker_addr, token_port, control_port, worker_count, ready_timeout,
              head_layer_start, head_layer_end, profiling, prompt_text,
-             metrics_file, context_sizes=(), benchmark_output="benchmark-results/context-sweep"):
+             metrics_file, context_sizes=(), benchmark_output="benchmark-results/context-sweep",
+             precision="auto", warmup_runs=0):
     ready, errors, controls, lock = set(), [], {}, threading.Lock()
     threading.Thread(target=_control_server,
                      args=(control_port, ready, errors, controls, lock), daemon=True).start()
@@ -130,7 +133,8 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
 
     head_model = None
     if head_layer_start is not None:
-        head_model = _build(model_name, head_layer_start, head_layer_end, n_total, device)
+        head_model = _build(
+            model_name, head_layer_start, head_layer_end, n_total, device, precision)
         log.info("HEAD slice layers %d..%d", head_layer_start, head_layer_end - 1)
 
     _wait_ready(worker_count, ready, errors, lock, ready_timeout)
@@ -143,6 +147,13 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
     if context_sizes:
         results = []
         csv_path = svg_path = None
+        for warmup in range(warmup_runs):
+            ids = build_context_ids(tokenizer, context_sizes[0], device)
+            print(f"\nWARMUP {warmup + 1}/{warmup_runs}", flush=True)
+            response = _generate_response(
+                tokenizer, ids, head_model, device, max_new, conn,
+                srv_tok, tok, errors, False, False, True)
+            tok = response.token_socket
         for context_size in context_sizes:
             ids = build_context_ids(tokenizer, context_size, device)
             print(f"\nBENCHMARK context={context_size} generated_max={max_new}", flush=True)
@@ -152,7 +163,8 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
             tok = response.token_socket
             print(tokenizer.decode(response.tokens, skip_special_tokens=True))
             results.append(_record_response(
-                model_name, context_size, worker_count, metrics_file, response))
+                model_name, context_size, worker_count, metrics_file,
+                response, precision))
             csv_path, svg_path = write_context_outputs(results, benchmark_output)
         assert csv_path is not None and svg_path is not None
         print(f"BENCHMARK outputs: {csv_path} {svg_path}", flush=True)
@@ -176,7 +188,8 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
             sys.stdout.write("\n")
             sys.stdout.flush()
             _record_response(
-                model_name, int(ids.shape[1]), worker_count, metrics_file, response)
+                model_name, int(ids.shape[1]), worker_count, metrics_file,
+                response, precision)
     else:
         prompt = prompt_text
         ids = _prompt_ids(tokenizer, prompt, device)
@@ -188,7 +201,8 @@ def run_head(model_name, n_total, device, tokenizer, max_new, interactive,
         if profiling:
             print(tokenizer.decode(response.tokens))
         _record_response(
-            model_name, int(ids.shape[1]), worker_count, metrics_file, response)
+            model_name, int(ids.shape[1]), worker_count, metrics_file,
+            response, precision)
         sys.stdout.write("\n")
         sys.stdout.flush()
 

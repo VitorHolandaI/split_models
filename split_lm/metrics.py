@@ -14,6 +14,7 @@ class GenerationMetrics:
     recorded_at: str
     mode: str
     model: str
+    precision: str
     workers: int
     prompt_tokens: int
     generated_tokens: int
@@ -40,7 +41,8 @@ def _validate_times(started_at: float, finished_at: float,
 def build_generation_metrics(mode: str, model: str, prompt_tokens: int,
                              started_at: float, finished_at: float,
                              token_times: Sequence[float], workers: int,
-                             recorded_at: str | None = None) -> GenerationMetrics:
+                             recorded_at: str | None = None,
+                             precision: str = "unknown") -> GenerationMetrics:
     """Calculate end-to-end, first-token, and inter-token measurements."""
     _validate_times(started_at, finished_at, token_times)
     total = finished_at - started_at
@@ -51,7 +53,7 @@ def build_generation_metrics(mode: str, model: str, prompt_tokens: int,
     rate = generated / total if total else 0.0
     timestamp = recorded_at or datetime.now(timezone.utc).isoformat()
     return GenerationMetrics(
-        timestamp, mode, model, workers, prompt_tokens, generated,
+        timestamp, mode, model, precision, workers, prompt_tokens, generated,
         total, first, inter_token, rate)
 
 
@@ -74,7 +76,9 @@ def _metric_line(label: str, value: str, code: str, color: bool) -> str:
 
 def format_metrics(metrics: GenerationMetrics, color: bool = False) -> str:
     """Render aligned, optionally colored, millisecond generation metrics."""
-    title = _color(f"=== GENERATION METRICS | {metrics.mode.upper()} ===", "1;36", color)
+    title = _color(
+        f"=== GENERATION METRICS | {metrics.mode.upper()} | {metrics.precision.upper()} ===",
+        "1;36", color)
     lines = [
         title, "",
         _metric_line("prompt_tokens", str(metrics.prompt_tokens), "34", color),

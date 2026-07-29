@@ -17,7 +17,7 @@ def _send_error(control, node_id, stage, exc):
 
 def run_worker(model_name, layer_start, layer_end, n_total, device,
                 tokenizer, max_new, listen_port, send_to, token_back_to,
-                control_to, node_id, fake_error, profiling):
+                control_to, node_id, fake_error, profiling, precision="auto"):
     is_first = layer_start == 0
     is_last = layer_end == n_total
     log.info("WORKER %s testando head control %s", node_id, control_to)
@@ -28,7 +28,8 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
         if token_back_to:
             log.info("WORKER %s testando token-back %s", node_id, token_back_to)
             _probe(token_back_to, "head token-back")
-        model = _build(model_name, layer_start, layer_end, n_total, device)
+        model = _build(
+            model_name, layer_start, layer_end, n_total, device, precision)
         log.info("WORKER %s layers %d..%d (%d params)", node_id, layer_start,
                  layer_end - 1, sum(p.numel() for p in model.parameters()))
 

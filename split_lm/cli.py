@@ -3,6 +3,7 @@ import argparse, logging, sys, warnings
 from transformers import AutoConfig, AutoTokenizer
 
 from .context_benchmark import parse_context_sizes
+from .benchmark_profiles import RUNTIME_PRECISIONS
 from .constants import SUPPORTED_MODEL_TYPES
 from .model.loader import _check_supported_config
 from .node.head import run_head
@@ -40,6 +41,8 @@ def main():
                     help="head benchmark: contextos crescentes, ex 128,256,512")
     ap.add_argument("--metrics-file", default="benchmark-results/generation.jsonl")
     ap.add_argument("--benchmark-output", default="benchmark-results/context-sweep")
+    ap.add_argument("--precision", choices=RUNTIME_PRECISIONS, default="auto")
+    ap.add_argument("--warmup-runs", type=int, default=0)
     args = ap.parse_args()
 
     if args.profiling and args.interactive:
@@ -87,7 +90,8 @@ def main():
                  args.interactive, _parse(args.connect), args.port,
                  args.control_port, args.workers, args.ready_timeout,
                  args.layer_start, args.layer_end, args.profiling, args.prompt,
-                 args.metrics_file, context_sizes, args.benchmark_output)
+                 args.metrics_file, context_sizes, args.benchmark_output,
+                 args.precision, args.warmup_runs)
     else:
         if args.layer_start is None or args.layer_end is None:
             print("worker precisa de --layer-start e --layer-end")
@@ -105,7 +109,8 @@ def main():
         run_worker(args.model, args.layer_start, args.layer_end, n_total, args.device,
                    t, args.max_new_tokens, args.port,
                    _parse(args.connect), _parse(args.token_back_to),
-                   _parse(args.control_to), node_id, args.fake_error, args.profiling)
+                   _parse(args.control_to), node_id, args.fake_error, args.profiling,
+                   args.precision)
 
 
 if __name__ == "__main__":

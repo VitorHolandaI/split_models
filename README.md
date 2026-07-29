@@ -73,3 +73,55 @@ benchmark-results/context-sweep.svg
 The sweep uses exact input-token counts, resets KV cache between points, keeps
 the model loaded, and ignores EOS so every point generates the same number of
 tokens. Add `4096` and `8192` only after checking memory use.
+
+## Benchmark Profiles
+
+Named profiles live in `benchmarks.toml`. List them with:
+
+```bash
+uv run split-cluster benchmarks
+```
+
+Run the exact same profile locally:
+
+```bash
+uv run python tools/benchmark_single_model.py \
+  --benchmark-profile context-quick
+```
+
+Then run it through the vertical cluster:
+
+```bash
+uv run split-cluster master \
+  --discover \
+  --broadcast 192.168.0.255 \
+  --head-address 192.168.0.7 \
+  --benchmark-profile context-quick
+```
+
+Profiles define the model, exact contexts, generated-token count, warmup runs,
+precision, JSONL history, and graph prefix. Warmups are not written to the
+result files.
+
+## INT8 And INT4
+
+Quantized CPU profiles use optional TorchAO weight-only quantization. Install
+the extra on every participating machine:
+
+```bash
+uv sync --extra quant
+```
+
+The optional dependency is pinned to the validated TorchAO `0.17.x` API.
+
+Available profiles include:
+
+```text
+context-quick-int8
+context-quick-int4
+```
+
+The loader first loads each slice in BF16 and then quantizes that slice. Peak
+loading memory can therefore exceed steady-state quantized memory. Hidden
+states and KV cache remain BF16. INT8/INT4 reduce weight memory but are not
+guaranteed to improve CPU latency; compare output quality and measured timing.

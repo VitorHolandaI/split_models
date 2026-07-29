@@ -11,8 +11,11 @@ from collections.abc import Sequence
 
 from transformers import AutoConfig
 
+from ..benchmark_profiles import (
+    RUNTIME_PRECISIONS, format_profiles, load_profile, load_profiles,
+    profile_overrides)
 from ..context_benchmark import parse_context_sizes
-from ..model.loader import _check_supported_config
+from ..model.loader import _check_supported_config, _ensure_precision_available
 from .control import serve_control
 from .discovery import DISCOVERY_PORT, discover_nodes, local_node, serve_discovery
 from .master import run_vertical_cluster
@@ -76,11 +79,15 @@ def _add_master_arguments(parser: argparse.ArgumentParser) -> None:
                         help="benchmark: contextos crescentes, ex 128,256,512")
     parser.add_argument("--metrics-file", default="benchmark-results/generation.jsonl")
     parser.add_argument("--benchmark-output", default="benchmark-results/context-sweep")
+    parser.add_argument("--benchmark-config", default="benchmarks.toml")
+    parser.add_argument("--benchmark-profile", default=None)
+    parser.add_argument("--precision", choices=RUNTIME_PRECISIONS, default="bfloat16")
+    parser.add_argument("--warmup-runs", type=int, default=0)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="split-cluster", description="cluster split LLM")
-    parser.add_argument("role", choices=["worker", "nodes", "master"])
+    parser.add_argument("role", choices=["worker", "nodes", "master", "benchmarks"])
     _add_worker_arguments(parser)
     _add_discovery_arguments(parser)
     _add_master_arguments(parser)
@@ -112,6 +119,11 @@ def _run_worker_agent(args: argparse.Namespace) -> None:
 def _run_master(args: argparse.Namespace) -> None:
     if not args.discover:
         raise ValueError("master exige --discover; esperado discovery UDP dos workers")
+    if args.benchmark_profile:
+        profile = load_profile(args.benchmark_config, args.benchmark_profile)
+        for name, value in profile_overrides(profile).items():
+            setattr(args, name, value)
+    _ensure_precision_available(args.precision)
     workers = discover_nodes(args.discovery_port, args.timeout, args.broadcast)
     if not workers:
         raise RuntimeError(f"nenhum worker encontrado via {args.broadcast}:{args.discovery_port}")
@@ -126,7 +138,8 @@ def _run_master(args: argparse.Namespace) -> None:
     run_vertical_cluster(
         args.model, int(config.num_hidden_layers), head_address, workers,
         args.max_new_tokens, args.ready_timeout, context_sizes=context_sizes,
-        metrics_file=args.metrics_file, benchmark_output=args.benchmark_output)
+        metrics_file=args.metrics_file, benchmark_output=args.benchmark_output,
+        precision=args.precision, warmup_runs=args.warmup_runs)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -135,6 +148,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     Usage example: `split-cluster nodes --timeout 3`.
     """
     args = _build_parser().parse_args(argv)
+    if args.role == "benchmarks":
+        print(format_profiles(load_profiles(args.benchmark_config)))
+        return
     if args.role == "nodes":
         print(format_nodes(
             discover_nodes(args.discovery_port, args.timeout, args.broadcast)))

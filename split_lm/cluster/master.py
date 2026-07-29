@@ -27,13 +27,14 @@ class HeadRunner(Protocol):
 
 
 def job_for_assignment(assignment: WorkerAssignment, model: str,
-                       total_layers: int, max_new_tokens: int) -> VerticalJob:
+                       total_layers: int, max_new_tokens: int,
+                       precision: str = "bfloat16") -> VerticalJob:
     """Convert one planned layer range into a validated worker job."""
     start, end = assignment.layers
     return VerticalJob(
         model, start, end, total_layers, INFERENCE_PORT,
         assignment.control_to, assignment.node.node_id,
-        assignment.connect_to, assignment.token_back_to, max_new_tokens,
+        assignment.connect_to, assignment.token_back_to, max_new_tokens, precision,
     )
 
 
@@ -42,6 +43,8 @@ def head_command(model: str, total_layers: int, layers: tuple[int, int],
                  ready_timeout: float, context_sizes: tuple[int, ...] = (),
                  metrics_file: str = "benchmark-results/generation.jsonl",
                  benchmark_output: str = "benchmark-results/context-sweep",
+                 precision: str = "bfloat16",
+                 warmup_runs: int = 0,
                  executable: str = sys.executable) -> list[str]:
     """Build the local interactive head command for a vertical plan."""
     start, end = layers
@@ -52,6 +55,7 @@ def head_command(model: str, total_layers: int, layers: tuple[int, int],
         "--connect", first_worker, "--port", str(INFERENCE_PORT),
         "--control-port", str(HEAD_CONTROL_PORT), "--workers", str(workers),
         "--ready-timeout", str(ready_timeout), "--metrics-file", metrics_file, "--verbose",
+        "--precision", precision, "--warmup-runs", str(warmup_runs),
     ]
     if context_sizes:
         return command + ["--context-sizes", ",".join(map(str, context_sizes)),
@@ -64,11 +68,13 @@ def _agent_address(assignment: WorkerAssignment) -> tuple[str, int]:
 
 
 def _start_workers(plan: VerticalPlan, model: str, total_layers: int,
-                   max_new_tokens: int, requester: AgentRequester) -> list[WorkerAssignment]:
+                   max_new_tokens: int, precision: str,
+                   requester: AgentRequester) -> list[WorkerAssignment]:
     started: list[WorkerAssignment] = []
     try:
         for assignment in reversed(plan.workers):
-            job = job_for_assignment(assignment, model, total_layers, max_new_tokens)
+            job = job_for_assignment(
+                assignment, model, total_layers, max_new_tokens, precision)
             message = {"type": "START", "job": job.to_payload()}
             response = requester(_agent_address(assignment), message)
             if response.get("type") != "STARTED":
@@ -99,14 +105,18 @@ def run_vertical_cluster(model: str, total_layers: int, head_address: str,
                          runner: HeadRunner = _run_head,
                          context_sizes: tuple[int, ...] = (),
                          metrics_file: str = "benchmark-results/generation.jsonl",
-                         benchmark_output: str = "benchmark-results/context-sweep") -> None:
+                         benchmark_output: str = "benchmark-results/context-sweep",
+                         precision: str = "bfloat16",
+                         warmup_runs: int = 0) -> None:
     """Start discovered workers, run interactive head, then stop remote jobs."""
     plan = build_vertical_plan(total_layers, head_address, workers)
     started: list[WorkerAssignment] = []
     try:
-        started = _start_workers(plan, model, total_layers, max_new_tokens, requester)
+        started = _start_workers(
+            plan, model, total_layers, max_new_tokens, precision, requester)
         runner(head_command(model, total_layers, plan.head_layers, plan.first_worker,
                             len(plan.workers), max_new_tokens, ready_timeout,
-                            context_sizes, metrics_file, benchmark_output))
+                            context_sizes, metrics_file, benchmark_output,
+                            precision, warmup_runs))
     finally:
         _stop_workers(started, requester)
