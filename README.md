@@ -121,6 +121,10 @@ context-quick-int8
 context-quick-int4
 ```
 
+For a more realistic response length, use `context-realistic`. It generates
+128 tokens per context; `context-quick` remains the short 16-token regression
+for quickly comparing TTFT after code changes.
+
 The loader first loads each slice in BF16 and then quantizes that slice. Peak
 loading memory can therefore exceed steady-state quantized memory. Hidden
 states and KV cache remain BF16. INT8/INT4 reduce weight memory but are not

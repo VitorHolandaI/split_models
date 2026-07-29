@@ -18,6 +18,16 @@ precision = "bfloat16"
 metrics_file = "benchmark-results/context-deep.jsonl"
 output_prefix = "benchmark-results/context-deep"
 
+[profiles.context-realistic]
+description = "Realistic BF16 response length across common contexts"
+model = "Qwen/Qwen2.5-3B-Instruct"
+context_sizes = [128, 256, 512, 1024, 2048]
+max_new_tokens = 128
+warmup_runs = 1
+precision = "bfloat16"
+metrics_file = "benchmark-results/context-realistic.jsonl"
+output_prefix = "benchmark-results/context-realistic"
+
 [profiles.decode-long]
 description = "Sustained BF16 decode at one fixed prompt size"
 model = "Qwen/Qwen2.5-3B-Instruct"
