@@ -90,11 +90,16 @@ def _drop_unused_modules(model, is_head, is_last):
         model.lm_head = None
 
 
+def _model_init_kwargs(config) -> dict[str, object]:
+    dtype = getattr(config, "dtype", None)
+    return {"dtype": dtype} if dtype is not None else {}
+
+
 def _build(model_name, layer_start, layer_end, n_total, device):
     cfg = AutoConfig.from_pretrained(model_name)
     _check_supported_config(cfg)
     cfg.num_hidden_layers = layer_end - layer_start
-    model = AutoModelForCausalLM.from_config(cfg)
+    model = AutoModelForCausalLM.from_config(cfg, **_model_init_kwargs(cfg))
     _drop_unused_modules(model, layer_start == 0, layer_end == n_total)
     w = _load_weights(model_name, layer_start, layer_end, n_total, cfg)
     _validate_loaded_weights(model, w, model_name, layer_start, layer_end,

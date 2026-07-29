@@ -39,17 +39,24 @@ def job_for_assignment(assignment: WorkerAssignment, model: str,
 
 def head_command(model: str, total_layers: int, layers: tuple[int, int],
                  first_worker: str, workers: int, max_new_tokens: int,
-                 ready_timeout: float, executable: str = sys.executable) -> list[str]:
+                 ready_timeout: float, context_sizes: tuple[int, ...] = (),
+                 metrics_file: str = "benchmark-results/generation.jsonl",
+                 benchmark_output: str = "benchmark-results/context-sweep",
+                 executable: str = sys.executable) -> list[str]:
     """Build the local interactive head command for a vertical plan."""
     start, end = layers
-    return [
+    command = [
         executable, "-m", "split_lm", "--model", model,
         "--total-layers", str(total_layers), "--max-new-tokens", str(max_new_tokens),
         "head", "--layer-start", str(start), "--layer-end", str(end),
         "--connect", first_worker, "--port", str(INFERENCE_PORT),
         "--control-port", str(HEAD_CONTROL_PORT), "--workers", str(workers),
-        "--ready-timeout", str(ready_timeout), "--interactive", "--verbose",
+        "--ready-timeout", str(ready_timeout), "--metrics-file", metrics_file, "--verbose",
     ]
+    if context_sizes:
+        return command + ["--context-sizes", ",".join(map(str, context_sizes)),
+                          "--benchmark-output", benchmark_output, "--profiling"]
+    return command + ["--interactive"]
 
 
 def _agent_address(assignment: WorkerAssignment) -> tuple[str, int]:
@@ -89,13 +96,17 @@ def _run_head(command: Sequence[str]) -> None:
 def run_vertical_cluster(model: str, total_layers: int, head_address: str,
                          workers: tuple[ClusterNode, ...], max_new_tokens: int,
                          ready_timeout: float, requester: AgentRequester = request_agent,
-                         runner: HeadRunner = _run_head) -> None:
+                         runner: HeadRunner = _run_head,
+                         context_sizes: tuple[int, ...] = (),
+                         metrics_file: str = "benchmark-results/generation.jsonl",
+                         benchmark_output: str = "benchmark-results/context-sweep") -> None:
     """Start discovered workers, run interactive head, then stop remote jobs."""
     plan = build_vertical_plan(total_layers, head_address, workers)
     started: list[WorkerAssignment] = []
     try:
         started = _start_workers(plan, model, total_layers, max_new_tokens, requester)
         runner(head_command(model, total_layers, plan.head_layers, plan.first_worker,
-                            len(plan.workers), max_new_tokens, ready_timeout))
+                            len(plan.workers), max_new_tokens, ready_timeout,
+                            context_sizes, metrics_file, benchmark_output))
     finally:
         _stop_workers(started, requester)

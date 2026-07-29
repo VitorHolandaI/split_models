@@ -9,9 +9,12 @@ from __future__ import annotations
 import argparse
 import resource
 import time
+from collections.abc import Callable
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from split_lm.metrics import append_metrics, build_generation_metrics, format_metrics
 
 
 DTYPES: dict[str, object] = {
@@ -22,6 +25,24 @@ DTYPES: dict[str, object] = {
 }
 
 
+class TokenTimingStreamer:
+    """Capture one timestamp for each token emitted by `generate`."""
+
+    def __init__(self, clock: Callable[[], float] = time.perf_counter):
+        self.clock = clock
+        self.received_prompt = False
+        self.token_times: list[float] = []
+
+    def put(self, value: torch.Tensor) -> None:
+        if not self.received_prompt:
+            self.received_prompt = True
+            return
+        self.token_times.append(self.clock())
+
+    def end(self) -> None:
+        return
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="HuggingFaceTB/SmolLM2-360M-Instruct")
@@ -30,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=100)
     parser.add_argument("--prompt", default="Write a poem about distributed computers.")
     parser.add_argument("--ignore-eos", action="store_true", help="force generation to use the full token budget")
+    parser.add_argument("--metrics-file", default="benchmark-results/generation.jsonl")
     return parser.parse_args()
 
 
@@ -73,6 +95,7 @@ def main() -> None:
     inputs = prompt_ids(tokenizer, args.prompt, args.device)
     eos_token_id = None if args.ignore_eos else tokenizer.eos_token_id
 
+    streamer = TokenTimingStreamer()
     start = time.perf_counter()
     with torch.no_grad():
         output = model.generate(
@@ -81,20 +104,23 @@ def main() -> None:
             do_sample=False,
             eos_token_id=eos_token_id,
             pad_token_id=tokenizer.eos_token_id,
+            streamer=streamer,
         )
-    generate_seconds = time.perf_counter() - start
+    finished = time.perf_counter()
 
     generated = output[0, inputs.shape[1]:]
     token_count = int(generated.numel())
-    tok_s = token_count / generate_seconds if generate_seconds else 0.0
-    ms_tok = generate_seconds / token_count * 1000.0 if token_count else 0.0
+    metrics = build_generation_metrics(
+        "local", args.model, int(inputs.shape[1]), start, finished,
+        streamer.token_times, workers=0)
+    append_metrics(args.metrics_file, metrics)
 
     print(tokenizer.decode(generated, skip_special_tokens=True))
     print(f"MODEL {args.model}")
     print(f"DEVICE {args.device} dtype={args.dtype}")
     print(f"PROMPT tokens={inputs.shape[1]} generated={token_count} max_new_tokens={args.max_new_tokens}")
     print(f"LOAD {load_seconds:.3f}s peak_rss={max_rss_mb():.1f} MiB")
-    print(f"GENERATE {generate_seconds:.3f}s tok/s={tok_s:.2f} ms/token={ms_tok:.1f}")
+    print(format_metrics(metrics))
 
 
 if __name__ == "__main__":

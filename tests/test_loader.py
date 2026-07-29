@@ -1,10 +1,21 @@
 import unittest
 from types import SimpleNamespace
 
-from split_lm.model.loader import _drop_unused_modules, _wanted_weight
+import torch
+
+from split_lm.model.loader import (
+    _drop_unused_modules, _model_init_kwargs, _wanted_weight)
 
 
 class LoaderTest(unittest.TestCase):
+    def test_model_initialization_preserves_checkpoint_dtype(self):
+        config = SimpleNamespace(dtype=torch.bfloat16)
+
+        self.assertEqual(_model_init_kwargs(config), {"dtype": torch.bfloat16})
+
+    def test_model_initialization_uses_framework_default_without_dtype(self):
+        self.assertEqual(_model_init_kwargs(SimpleNamespace()), {})
+
     def test_tail_loads_real_lm_head_when_embeddings_are_not_tied(self):
         config = SimpleNamespace(tie_word_embeddings=False)
 

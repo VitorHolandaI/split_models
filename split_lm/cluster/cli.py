@@ -11,6 +11,7 @@ from collections.abc import Sequence
 
 from transformers import AutoConfig
 
+from ..context_benchmark import parse_context_sizes
 from ..model.loader import _check_supported_config
 from .control import serve_control
 from .discovery import DISCOVERY_PORT, discover_nodes, local_node, serve_discovery
@@ -71,6 +72,10 @@ def _add_master_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B")
     parser.add_argument("--max-new-tokens", type=int, default=50)
     parser.add_argument("--ready-timeout", type=float, default=300)
+    parser.add_argument("--context-sizes", default=None,
+                        help="benchmark: contextos crescentes, ex 128,256,512")
+    parser.add_argument("--metrics-file", default="benchmark-results/generation.jsonl")
+    parser.add_argument("--benchmark-output", default="benchmark-results/context-sweep")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -113,10 +118,15 @@ def _run_master(args: argparse.Namespace) -> None:
     config = AutoConfig.from_pretrained(args.model)
     _check_supported_config(config)
     head_address = args.head_address or source_address_for(workers[0].address)
+    context_sizes = ()
+    if args.context_sizes:
+        max_context = int(config.max_position_embeddings) - args.max_new_tokens
+        context_sizes = parse_context_sizes(args.context_sizes, max_context)
     print(format_nodes(workers), flush=True)
     run_vertical_cluster(
         args.model, int(config.num_hidden_layers), head_address, workers,
-        args.max_new_tokens, args.ready_timeout)
+        args.max_new_tokens, args.ready_timeout, context_sizes=context_sizes,
+        metrics_file=args.metrics_file, benchmark_output=args.benchmark_output)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

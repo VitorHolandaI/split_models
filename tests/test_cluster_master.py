@@ -52,6 +52,15 @@ class MasterJobTest(unittest.TestCase):
         self.assertIn("--interactive", command)
         self.assertIn("10.66.66.8:9999", command)
 
+    def test_context_sweep_head_is_non_interactive(self):
+        command = head_command(
+            "Qwen/Qwen2.5-3B-Instruct", 36, (0, 18), "10.66.66.8:9999", 1,
+            16, 300, context_sizes=(128, 256), executable="/venv/python")
+
+        self.assertNotIn("--interactive", command)
+        self.assertIn("--context-sizes", command)
+        self.assertIn("128,256", command)
+
     def test_cluster_starts_workers_runs_head_and_stops_workers(self):
         requester = FakeAgentRequester()
         runner = FakeHeadRunner()

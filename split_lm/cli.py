@@ -2,6 +2,7 @@ import argparse, logging, sys, warnings
 
 from transformers import AutoConfig, AutoTokenizer
 
+from .context_benchmark import parse_context_sizes
 from .constants import SUPPORTED_MODEL_TYPES
 from .model.loader import _check_supported_config
 from .node.head import run_head
@@ -35,6 +36,10 @@ def main():
     ap.add_argument("--profiling", action="store_true", help="mede tempos e imprime resumo no fim da request")
     ap.add_argument("--interactive", action="store_true")
     ap.add_argument("--verbose", action="store_true", help="mostra logs INFO tambem no head")
+    ap.add_argument("--context-sizes", default=None,
+                    help="head benchmark: contextos crescentes, ex 128,256,512")
+    ap.add_argument("--metrics-file", default="benchmark-results/generation.jsonl")
+    ap.add_argument("--benchmark-output", default="benchmark-results/context-sweep")
     args = ap.parse_args()
 
     if args.profiling and args.interactive:
@@ -65,6 +70,10 @@ def main():
     cfg = AutoConfig.from_pretrained(args.model)
     _check_supported_config(cfg)
     n_total = args.total_layers or cfg.num_hidden_layers
+    context_sizes = ()
+    if args.context_sizes:
+        max_context = int(cfg.max_position_embeddings) - args.max_new_tokens
+        context_sizes = parse_context_sizes(args.context_sizes, max_context)
 
     if args.role == "head" and (args.layer_start is not None or args.layer_end is not None):
         if args.layer_start != 0 or args.layer_end is None or args.layer_end >= n_total:
@@ -77,7 +86,8 @@ def main():
         run_head(args.model, n_total, args.device, t, args.max_new_tokens,
                  args.interactive, _parse(args.connect), args.port,
                  args.control_port, args.workers, args.ready_timeout,
-                 args.layer_start, args.layer_end, args.profiling, args.prompt)
+                 args.layer_start, args.layer_end, args.profiling, args.prompt,
+                 args.metrics_file, context_sizes, args.benchmark_output)
     else:
         if args.layer_start is None or args.layer_end is None:
             print("worker precisa de --layer-start e --layer-end")
