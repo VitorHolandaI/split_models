@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 *.egg-info/
+
+# saida gerada: arvore temporaria do mkarchiso, ISO final e relatorios de benchmark
+build/
+dist/
+benchmark-results/
