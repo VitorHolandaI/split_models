@@ -5,8 +5,15 @@ from __future__ import annotations
 import argparse
 import logging
 import socket
+import threading
+from collections.abc import Sequence
 
+from transformers import AutoConfig
+
+from ..model.loader import _check_supported_config
+from .control import serve_control
 from .discovery import DISCOVERY_PORT, discover_nodes, local_node, serve_discovery
+from .master import run_vertical_cluster
 from .plan import ClusterNode
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(message)s")
@@ -32,38 +39,94 @@ def format_nodes(nodes: tuple[ClusterNode, ...]) -> str:
     return "\n".join([_HEADER, *rows])
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="split-cluster", description="cluster split LLM")
-    parser.add_argument("role", choices=["worker", "nodes"])
+def _add_worker_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--node-id", default=socket.gethostname(),
                         help="worker: identificador anunciado no discovery")
     parser.add_argument("--control-port", type=int, default=CONTROL_PORT,
                         help="worker: porta TCP onde o agente aceita jobs vertical")
     parser.add_argument("--discovery-port", type=int, default=DISCOVERY_PORT,
                         help="porta UDP de discovery, igual em todos os nos")
+
+
+def _add_discovery_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--timeout", type=float, default=2.0,
                         help="nodes: segundos esperando respostas do discovery")
     # 255.255.255.255 sai pela rota default; com VPN (wg0 /32) na frente da LAN
     # o probe morre no tunel, entao o operador aponta o broadcast da subrede.
     parser.add_argument("--broadcast", default="255.255.255.255",
                         help="nodes: endereco de broadcast da LAN, ex 10.1.2.255")
+
+
+def _add_master_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--discover", action="store_true",
+                        help="master: encontrar workers via UDP")
+    parser.add_argument("--head-address", default=None,
+                        help="master: IP anunciado aos workers; por padrao detecta pela rota")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B")
+    parser.add_argument("--max-new-tokens", type=int, default=50)
+    parser.add_argument("--ready-timeout", type=float, default=300)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="split-cluster", description="cluster split LLM")
+    parser.add_argument("role", choices=["worker", "nodes", "master"])
+    _add_worker_arguments(parser)
+    _add_discovery_arguments(parser)
+    _add_master_arguments(parser)
     return parser
 
 
-def main() -> None:
+def source_address_for(remote_address: str) -> str:
+    """Return the local IPv4 address selected for a worker route."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect((remote_address, DISCOVERY_PORT))
+        return str(probe.getsockname()[0])
+
+
+def _run_worker_agent(args: argparse.Namespace) -> None:
+    node = local_node(args.node_id, args.control_port)
+    stop = threading.Event()
+    discovery = threading.Thread(
+        target=serve_discovery, args=(node, args.discovery_port, stop), daemon=True)
+    discovery.start()
+    log.info("worker %s pronto: discovery udp/%d, controle tcp/%d",
+             node.node_id, args.discovery_port, args.control_port)
+    try:
+        serve_control(node.node_id, node.control_port, stop)
+    finally:
+        stop.set()
+        discovery.join(2)
+
+
+def _run_master(args: argparse.Namespace) -> None:
+    if not args.discover:
+        raise ValueError("master exige --discover; esperado discovery UDP dos workers")
+    workers = discover_nodes(args.discovery_port, args.timeout, args.broadcast)
+    if not workers:
+        raise RuntimeError(f"nenhum worker encontrado via {args.broadcast}:{args.discovery_port}")
+    config = AutoConfig.from_pretrained(args.model)
+    _check_supported_config(config)
+    head_address = args.head_address or source_address_for(workers[0].address)
+    print(format_nodes(workers), flush=True)
+    run_vertical_cluster(
+        args.model, int(config.num_hidden_layers), head_address, workers,
+        args.max_new_tokens, args.ready_timeout)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
     """Run the cluster CLI.
 
     Usage example: `split-cluster nodes --timeout 3`.
     """
-    args = _build_parser().parse_args()
+    args = _build_parser().parse_args(argv)
     if args.role == "nodes":
         print(format_nodes(
             discover_nodes(args.discovery_port, args.timeout, args.broadcast)))
         return
-    node = local_node(args.node_id, args.control_port)
-    log.info("worker %s pronto: %d cpus, %d MiB livres",
-             node.node_id, node.cpu_count, node.available_memory // 1024 // 1024)
-    serve_discovery(node, args.discovery_port)
+    if args.role == "master":
+        _run_master(args)
+        return
+    _run_worker_agent(args)
 
 
 if __name__ == "__main__":

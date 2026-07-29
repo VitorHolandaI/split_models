@@ -1,7 +1,7 @@
 import threading
 import unittest
 
-from split_lm.cluster.cli import format_nodes
+from split_lm.cluster.cli import format_nodes, source_address_for
 from split_lm.cluster.discovery import (
     DiscoveryReplyError, decode_reply, discover_nodes, encode_reply, local_node,
     serve_discovery)
@@ -85,6 +85,9 @@ class NodeTableTest(unittest.TestCase):
 
     def test_table_states_when_nothing_answered(self):
         self.assertEqual(format_nodes(()), "nenhum no respondeu ao discovery")
+
+    def test_source_address_uses_the_route_to_the_worker(self):
+        self.assertEqual(source_address_for("127.0.0.1"), "127.0.0.1")
 
 
 class DiscoveryTest(unittest.TestCase):
