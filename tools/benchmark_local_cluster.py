@@ -15,6 +15,7 @@ from collections.abc import Sequence
 
 from transformers import AutoConfig, PretrainedConfig
 
+from split_lm.constants import DEFAULT_CHAT_MODEL
 from split_lm.model.loader import _check_supported_config
 
 
@@ -97,7 +98,7 @@ def _format_bytes(value: float) -> str:
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B")
+    parser.add_argument("--model", default=DEFAULT_CHAT_MODEL)
     parser.add_argument("--nodes", type=int, default=2, help="head + workers")
     parser.add_argument("--max-new-tokens", type=int, default=10)
     parser.add_argument("--prompt", default="Write a poem about distributed computers.")

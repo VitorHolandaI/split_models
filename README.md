@@ -20,7 +20,7 @@ uv run split-cluster master \
   --discover \
   --broadcast 192.168.0.255 \
   --head-address 192.168.0.7 \
-  --model Qwen/Qwen2.5-0.5B
+  --model Qwen/Qwen2.5-0.5B-Instruct
 ```
 
 Every answer ends with:

@@ -1,0 +1,14 @@
+#!/usr/bin/bash
+set -u
+
+set -a
+source /etc/split-models.env
+set +a
+install -d -m 0755 "$HF_HOME" "$TMPDIR" /run/split-models/benchmark-results
+cd /opt/split-models || exit 1
+split-cluster worker
+status=$?
+printf '\nWorker encerrado com status %d.\n' "$status"
+printf 'Master: /root/split-master.sh\n'
+printf 'Comandos: cat /root/README-split-models.txt\n'
+exec /usr/bin/bash

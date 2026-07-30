@@ -4,7 +4,7 @@ from transformers import AutoConfig, AutoTokenizer
 
 from .context_benchmark import parse_context_sizes
 from .benchmark_profiles import RUNTIME_PRECISIONS
-from .constants import SUPPORTED_MODEL_TYPES
+from .constants import DEFAULT_CHAT_MODEL, SUPPORTED_MODEL_TYPES
 from .model.loader import _check_supported_config
 from .node.head import run_head
 from .node.worker import run_worker
@@ -17,7 +17,7 @@ log = logging.getLogger("split_lm")
 def main():
     ap = argparse.ArgumentParser(description="split LLM")
     ap.add_argument("role", choices=["head", "worker", "probe"])
-    ap.add_argument("--model", default="Qwen/Qwen2.5-0.5B")
+    ap.add_argument("--model", default=DEFAULT_CHAT_MODEL)
     ap.add_argument("--layer-start", type=int, default=None)
     ap.add_argument("--layer-end", type=int, default=None)
     ap.add_argument("--total-layers", type=int, default=None)

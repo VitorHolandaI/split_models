@@ -1,0 +1,12 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+set -a
+source /etc/split-models.env
+set +a
+python_path=/opt/split-models/.venv/bin/python
+if [[ ! -x "$python_path" ]]; then
+    printf 'ambiente ausente em %s; esperado .venv embutida na ISO\n' "$python_path" >&2
+    exit 1
+fi
+exec "$python_path" "$@"

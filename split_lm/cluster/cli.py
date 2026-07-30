@@ -16,6 +16,7 @@ from transformers import AutoConfig
 from ..benchmark_profiles import (
     RUNTIME_PRECISIONS, format_profiles, load_profile, load_profiles,
     profile_overrides)
+from ..constants import DEFAULT_CHAT_MODEL
 from ..context_benchmark import parse_context_sizes
 from ..model.loader import _check_supported_config, _ensure_precision_available
 from .control import serve_control
@@ -76,7 +77,7 @@ def _add_master_arguments(parser: argparse.ArgumentParser) -> None:
                         help="master: encontrar workers via UDP")
     parser.add_argument("--head-address", default=None,
                         help="master: IP anunciado aos workers; por padrao detecta pela rota")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B")
+    parser.add_argument("--model", default=DEFAULT_CHAT_MODEL)
     parser.add_argument("--max-new-tokens", type=int, default=50)
     parser.add_argument("--ready-timeout", type=float, default=300)
     parser.add_argument("--context-sizes", default=None,

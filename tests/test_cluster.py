@@ -12,6 +12,7 @@ from split_lm.cluster.discovery import (
 from split_lm.cluster.plan import (
     APP_MEMORY_PER_NODE, MAX_CLUSTER_NODES, ClusterNode,
     ModelCapacityError, build_vertical_plan, required_cluster_nodes)
+from split_lm.constants import DEFAULT_CHAT_MODEL
 
 
 GIB = 1024 ** 3
@@ -79,6 +80,12 @@ class DiscoveryReplyTest(unittest.TestCase):
 
 
 class NodeTableTest(unittest.TestCase):
+    def test_interactive_master_defaults_to_instruction_model(self):
+        args = _build_parser().parse_args(["master", "--discover"])
+
+        self.assertEqual(args.model, DEFAULT_CHAT_MODEL)
+        self.assertTrue(args.model.endswith("-Instruct"))
+
     def test_local_benchmark_help_is_specific_to_that_command(self):
         output = io.StringIO()
 

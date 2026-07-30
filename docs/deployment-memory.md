@@ -50,8 +50,10 @@ Se a ISO ficar montada via rede/NFS/iSCSI/HTTP e nao for copiada inteira para
 RAM, a imagem pesa mais em rede/disco do que em RAM, e o limite principal volta
 a ser o RSS do worker.
 
-Para esse PoC, nao embutir pesos do modelo na ISO. Montar cache/pesos por rede
-ou disco local persistente, senao a ISO cresce e rouba RAM no modo `toram`.
+Para esse PoC, nao embutir pesos do modelo na ISO. O appliance stateless baixa
+os pesos sob demanda para `/run/split-models/huggingface`; esse cache usa RAM e
+desaparece no reboot. Portanto, o orcamento precisa incluir simultaneamente o
+checkpoint baixado e os tensors carregados pelo worker.
 
 ## Base Linux
 
@@ -109,9 +111,9 @@ Principais blocos CPU-only:
 
 ## Aplicacao Standalone Sem Modelo
 
-O modelo nao precisa ser embutido no executavel. A aplicacao pode manter o
-comportamento atual: baixar config, tokenizer e shards pelo Hugging Face Hub na
-primeira execucao e reutilizar `~/.cache/huggingface` nas seguintes.
+O modelo nao precisa ser embutido no executavel. A aplicacao baixa config,
+tokenizer e shards pelo Hugging Face Hub em cada boot da live ISO. O cache fica
+em `/run`, sem persistencia local.
 
 Medicao atual:
 
@@ -234,6 +236,11 @@ dtype dos parametros. O pico medido confirma FP32.
 Conclusao: Qwen2.5-0.5B CPU-only cabe com folga em host de 8 GB mesmo com um
 worker carregando todas as layers. Modelos maiores ainda precisam medicao por
 range de layers.
+
+Na appliance totalmente stateless, uma VM de 3 GiB nao e suficiente: o cache
+do checkpoint em `/run` compete com os tensors carregados e o processo Python
+foi encerrado pelo OOM killer com aproximadamente 1.7 GiB de RSS anonimo. Usar
+no minimo 4 GiB por VM para o smoke test com Qwen2.5-0.5B.
 
 ## Simulacao Local De N Nos
 
