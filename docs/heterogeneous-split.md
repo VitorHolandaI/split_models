@@ -170,15 +170,21 @@ E continua penalidade. Mesmo com 90% do trabalho na 3060, os 10% restantes no
 iGPU custam em cada token, e a rede entra na conta duas vezes por token. O
 melhor split medido perde por quase tres vezes de simplesmente nao dividir.
 
-Com o 27B, onde a proporcao importava mais, as tentativas foram feitas com a
-ordem invertida e portanto sobrecarregando o iGPU:
+O `Qwen3.6-27B` em Q3_K_M, 13.59 GB, repete a curva:
 
-| razao | carga real | resultado |
+| razao | carga real | geracao |
 |---|---|---|
-| `20,80` | 80% no iGPU | falhou ao criar contexto |
-| `30,70` | 70% no iGPU | nao terminou em 10 minutos |
+| `50,50` | 50% no iGPU | 3.6 tok/s |
+| `90,10` | 10% no iGPU | 7.6 tok/s |
+| sem dividir | tudo na 3060 | 7.6 tok/s |
 
-Falta refazer essas com a ordem correta.
+Aqui o melhor split **empata** com nao dividir, em vez de perder. E o caso mais
+favoravel medido, e mesmo assim nao ganha: a 3060 sozinha ja transbordava para
+a CPU dela, e mandar esse excedente para o notebook custa o mesmo que manter
+localmente.
+
+As duas curvas sao monotonicas. Toda layer tirada do dispositivo lento melhora,
+sem excecao, ate o extremo de nao usa-lo -- que e o mesmo que nao dividir.
 
 O espaco util e estreito por construcao. Dar pouco ao dispositivo lento nao
 adianta, porque toda layer nele custa em **todo** token; dar muito ao rapido
@@ -193,6 +199,35 @@ que foi direto para swap.
 Uma razao derivada de velocidade medida, e nao de memoria, poderia fazer melhor.
 Mas o teto continua sendo a 3060 sozinha, entao o ganho maximo dessa otimizacao
 e chegar perto de nao ter dividido.
+
+## O Master Deve Ser A Maquina Mais Rapida
+
+Medido com `--tensor-split 100,0` no 9B: com **zero** trabalho no iGPU, ainda
+assim 26.2 tok/s contra 42.6 da mesma GPU sem RPC. Trinta e oito por cento
+perdidos so por atravessar a rede.
+
+A causa e o master amostrar todo token. Escolher o proximo token exige os
+logits, um vetor do tamanho do vocabulario -- ~152k entradas nos Qwen, 608 KB em
+fp32 -- e eles voltam pela rede a cada token. A 65 MB/s medidos entre estas
+maquinas isso da ~9.4 ms, e a diferenca medida por token foi 14.7 ms, o resto
+sendo ida e volta do TCP e submissao do grafo.
+
+Nao ha como sobrepor: o token N+1 depende do N ter sido escolhido.
+
+Duas consequencias:
+
+1. **O master deve rodar na maquina mais rapida da frota.** Assim o dispositivo
+   que faz o trabalho pesado e local e a rede fica no caminho do trabalho leve.
+   Na frota testada isso significa o master no PC da 3060, com o notebook como
+   worker -- o inverso do que foi medido aqui.
+2. **O custo de rede e fixo por token, nao proporcional ao trabalho remoto.** O
+   vocabulario nao cresce com o modelo, entao os mesmos ~15 ms pesam 38% num 9B
+   e cerca de 10% num 27B. E a mesma razao pela qual `docs/batching.md` conclui
+   que split compensa mais quanto maior o modelo.
+
+`split-llama velocidade` existe para essa decisao: uma corrida curta de
+`llama-bench` em cada no, o suficiente para ordenar as maquinas antes de
+escolher quem sera o master.
 
 ## Conclusao
 
