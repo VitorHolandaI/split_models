@@ -66,6 +66,42 @@ A rede nao e a causa principal aqui. Numa medicao anterior com o
 foi de 52.7 para 47.6 tok/s, cerca de 10%. A queda de 42.6 para 6.8 e outra
 ordem de grandeza, e vem do dispositivo lento, nao do fio.
 
+## A Evidencia Mais Limpa: 11% De Ocupacao
+
+Durante o split, `nvidia-smi` mostrou a RTX 3060 em **11% de utilizacao**. Esse
+numero mede a causa, nao o efeito.
+
+Os dispositivos trabalham em sequencia, nunca em paralelo:
+
+```
+Intel calcula as layers dele  ->  manda ativacoes pela rede
+                                  ->  3060 calcula as layers dela
+                                  ->  resultado volta, proximo token
+```
+
+Enquanto um calcula, o outro espera. A dependencia e estrita: a layer 20
+precisa da saida da 19, entao nao ha como sobrepor trabalho dentro de um mesmo
+token. Os 11% sao a fracao do tempo em que a 3060 de fato calcula.
+
+Com maquinas iguais cada uma ficaria perto de 50% ocupada -- ainda desperdicio,
+mas simetrico. A 3060 sendo ~26x mais rapida, ela despacha a parte dela e passa
+o resto do tempo esperando; 11% e aproximadamente a razao de velocidade entre
+as duas.
+
+Isso nao e configuracao errada nem falta de ajuste. E o que dividir um pipeline
+sequencial entre dispositivos desiguais produz.
+
+## Por Que Batching Resolveria E Aqui Nao Resolve
+
+Pipeline so atinge ocupacao alta com varias requisicoes em voo: enquanto a
+3060 processa o token do usuario A, o Intel ja comeca o do usuario B. E assim
+que servidor de inferencia mantem GPU ocupada.
+
+`docs/batching.md` mostra por que nao serve aqui: com batch=1 nao existe
+sobreposicao possivel, porque so ha uma cadeia de dependencia em andamento. O
+`split_models` e single-user por construcao, entao a ociosidade do pipeline nao
+tem de onde ser preenchida.
+
 ## Quando O Split Vale
 
 Quando o modelo **nao cabe em maquina nenhuma**. Ai a comparacao nao e
