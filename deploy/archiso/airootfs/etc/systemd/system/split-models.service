@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/tmux new-session -d -s split-models /usr/local/bin/split-models-session
+ExecStart=/usr/local/bin/split-models-tmux
 ExecStop=-/usr/bin/tmux kill-session -t split-models
 
 [Install]

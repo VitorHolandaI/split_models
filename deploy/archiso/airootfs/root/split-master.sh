@@ -14,9 +14,16 @@ broadcast="${SPLIT_BROADCAST:-$(detect_broadcast)}"
 model="${SPLIT_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
 max_new_tokens="${SPLIT_MAX_NEW_TOKENS:-50}"
 
+install -d -m 0755 /run/split-models
+printf 'master\n' > /run/split-models/role
+restore_role() {
+    printf 'shell\n' > /run/split-models/role
+}
+trap restore_role EXIT
+
 printf 'master: broadcast=%s model=%s max_new_tokens=%s\n' \
     "$broadcast" "$model" "$max_new_tokens"
-exec split-cluster master \
+split-cluster master \
     --discover \
     --broadcast "$broadcast" \
     --model "$model" \

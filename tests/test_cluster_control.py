@@ -2,6 +2,7 @@ import socket
 import threading
 import unittest
 from collections.abc import Sequence
+from typing import cast
 
 from split_lm.cluster.control import (
     JobValidationError, VerticalJob, _connect_agent, request_agent, serve_control,
@@ -104,9 +105,16 @@ class ControlAgentTest(unittest.TestCase):
         request_agent(address, message)
 
         response = request_agent(address, message)
+        machine = cast(dict[str, object], response["machine"])
+        cause = cast(dict[str, object], response["cause"])
 
         self.assertEqual(response["type"], "ERROR")
-        self.assertIn("ja executa", str(response["message"]))
+        self.assertEqual(response["origin"], "agent")
+        self.assertEqual(machine["node_id"], "node-2")
+        self.assertEqual(machine["address"], "127.0.0.1")
+        self.assertEqual(response["stage"], "agent.validate_request")
+        self.assertEqual(cause["type"], "JobValidationError")
+        self.assertIn("ja executa", str(cause["message"]))
 
     def test_empty_probe_does_not_stop_control_agent(self):
         address = ("127.0.0.1", self.port)

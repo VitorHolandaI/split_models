@@ -1,5 +1,6 @@
 import logging, socket, time
 
+from ..errors import ClusterError
 from ..io.network import _connect, _probe, _configure_connected_socket
 from ..io.framing import _send_msg, SocketClosedError
 from ..io.protocol import _send, _recv, NetworkStats
@@ -11,9 +12,14 @@ log = logging.getLogger("split_lm")
 
 
 def _send_error(control, node_id, stage, exc):
-    msg = {"type": "ERROR", "node": node_id, "stage": stage, "message": str(exc)}
-    try: _send_msg(control, msg)
-    except Exception: log.exception("WORKER falhou mandando erro: %s", msg)
+    socket_name = control.getsockname()
+    address = str(socket_name[0]) if isinstance(socket_name, tuple) else "local"
+    error = ClusterError.from_exception(
+        "worker", node_id, socket.gethostname(), address, stage, exc)
+    try:
+        _send_msg(control, error.to_payload())
+    except Exception:
+        log.exception("WORKER falhou mandando erro: %s", error)
 
 
 def run_worker(model_name, layer_start, layer_end, n_total, device,
@@ -22,58 +28,73 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
     is_first = layer_start == 0
     is_last = layer_end == n_total
     log.info("WORKER %s testando head control %s", node_id, control_to)
-    control = _connect(control_to, "head control")
+    try:
+        control = _connect(control_to, "head control")
+    except Exception as exc:
+        raise ClusterError.from_exception(
+            "worker", node_id, socket.gethostname(), "local",
+            "worker.connect_control", exc) from exc
+    stage = "worker.startup_test"
     try:
         if fake_error == "startup":
             raise RuntimeError(f"erro fake de startup em {node_id}")
         if token_back_to:
+            stage = "worker.probe_token_back"
             log.info("WORKER %s testando token-back %s", node_id, token_back_to)
             _probe(token_back_to, "head token-back")
+        stage = "worker.load_model"
         model = _build(
             model_name, layer_start, layer_end, n_total, device, precision)
         log.info("WORKER %s layers %d..%d (%d params)", node_id, layer_start,
                  layer_end - 1, sum(p.numel() for p in model.parameters()))
 
+        stage = "worker.bind_inference"
         srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind(("0.0.0.0", listen_port)); srv.listen(1)
         log.info("WORKER %s escutando em :%d...", node_id, listen_port)
 
         if send_to:
+            stage = "worker.connect_downstream"
             downstream = _connect(send_to, "downstream")
             log.info("WORKER %s conectou ao downstream %s", node_id, send_to)
         else:
             downstream = None
 
         if token_back_to:
+            stage = "worker.connect_token_back"
             token_back = _connect(token_back_to, "token-back")
             log.info("WORKER %s token-back conectou ao head %s", node_id, token_back_to)
         else:
             token_back = None
 
+        stage = "worker.send_ready"
         _send_msg(control, {"type": "READY", "node": node_id})
+        stage = "worker.wait_upstream"
         upstream = _configure_connected_socket(srv.accept()[0])
         log.info("WORKER %s: upstream conectou", node_id)
     except Exception as exc:
-        _send_error(control, node_id, "startup", exc)
+        _send_error(control, node_id, stage, exc)
         raise
 
+    step = 0
+    stats = {"total": 0.0} if profiling else None
+    net_stats = NetworkStats() if profiling else None
+    cache_state = _new_cache_state()
+    total_start = time.perf_counter()
     try:
-        step = 0
-        stats = {"total": 0.0} if profiling else None
-        net_stats = NetworkStats() if profiling else None
-        cache_state = _new_cache_state()
-        total_start = time.perf_counter()
         while True:
             step += 1
             if fake_error == "run":
                 raise RuntimeError(f"erro fake de run em {node_id}")
             start = time.perf_counter()
+            stage = "worker.receive"
             if is_first:
                 ids, reset_cache = _recv(upstream, device, net_stats)
                 _stat_add(stats, "recv", time.perf_counter() - start)
                 if reset_cache:
                     cache_state = _new_cache_state()
                 start = time.perf_counter()
+                stage = "worker.forward"
                 h = _forward(model, None, device, True, is_last, ids,
                              cache_state)
                 cache_state["pos"] += ids.shape[1]
@@ -84,6 +105,7 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
                 if reset_cache:
                     cache_state = _new_cache_state()
                 start = time.perf_counter()
+                stage = "worker.forward"
                 h = _forward(model, h, device, False, is_last,
                              cache_state=cache_state)
                 cache_state["pos"] += recv_len
@@ -92,6 +114,7 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
             if is_last:
                 nid = h[0, -1].argmax()
                 start = time.perf_counter()
+                stage = "worker.send_token"
                 _send(token_back, nid.unsqueeze(0), net_stats)
                 _stat_add(stats, "send_token", time.perf_counter() - start)
                 _stat_inc(stats, "tokens")
@@ -99,6 +122,7 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
                     log.info("WORKER %s: step %d token %d", node_id, step, nid.item())
             else:
                 start = time.perf_counter()
+                stage = "worker.send_downstream"
                 _send(downstream, h, net_stats, reset_cache)
                 _stat_add(stats, "send_downstream", time.perf_counter() - start)
                 _stat_inc(stats, "tokens")
@@ -110,10 +134,10 @@ def run_worker(model_name, layer_start, layer_end, n_total, device,
             _profile_report(node_id, stats, net_stats)
         log.info("WORKER %s: upstream fechou", node_id)
     except ConnectionError as exc:
-        _send_error(control, node_id, "run", exc)
+        _send_error(control, node_id, stage, exc)
         raise
     except Exception as exc:
-        _send_error(control, node_id, "run", exc)
+        _send_error(control, node_id, stage, exc)
         raise
 
     srv.close()

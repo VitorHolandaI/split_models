@@ -1,5 +1,6 @@
 import logging, socket, threading, time
 
+from ..errors import ClusterError
 from .framing import _recv_msg, _send_msg
 from .protocol import _recv
 
@@ -70,7 +71,8 @@ def _wait_ready(worker_count, ready, errors, lock, timeout):
     deadline = time.time() + timeout if timeout else None
     while True:
         with lock:
-            if errors: raise RuntimeError(errors[-1])
+            if errors:
+                raise ClusterError.from_payload(errors[-1])
             if len(ready) >= worker_count: return
         if deadline and time.time() > deadline:
             raise TimeoutError(f"esperava {worker_count} READY, recebeu {len(ready)}")

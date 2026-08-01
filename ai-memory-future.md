@@ -16,10 +16,11 @@ The appliance must support both:
 ## Repository State
 
 - Repository: `/home/vitor/tinker_git/split_models`
-- Branch: `feature/vertical-split-cluster`
-- Latest pushed commit: `357cd47 Add stateless Archiso appliance`
-- The Casper compatibility, console, protocol, lazy import, and final
-  validation changes after that commit are currently uncommitted.
+- Branch: `feature/operator-errors-tmux-help`
+- Model distribution branch: `feature/master-model-distribution` at `30688ba`
+- Latest pushed commit: `30688ba Harden stateless Archiso appliance`
+- Structured errors, the split tmux console, and generated command examples are
+  implemented in the worktree but not committed or rebuilt into the ISO yet.
 - Do not modify or include unrelated user work such as
   `experiments/tensor_parallel/README.md`, `CLAUDE.md`, `hand.md`, or
   `studies/` unless explicitly requested.
@@ -54,7 +55,8 @@ while the RAM-backed model cache and Python tensors existed simultaneously.
 
 ## Console and Autologin
 
-The physical `tty1` automatically logs in as root and opens `bpytop`.
+The physical `tty1` automatically logs in as root and attaches the
+`split-models` tmux session.
 
 Systemd drop-in:
 
@@ -64,22 +66,15 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
 ```
 
-The unit instance is `getty@tty1.service`, so systemd replaces `%I` with
-`tty1`. After `login` starts Bash as a login shell, Bash reads
-`/root/.bash_profile`:
+The tmux window is split side by side: the left 65% pane runs the worker and
+shows its logs; the right 35% pane runs `bpytop`. `Ctrl-b` plus arrow keys move
+between panes. Pressing `q` replaces `bpytop` with a shell in the right pane.
+The fixed status line shows `role`, stable `node_id`, and current local IPv4.
+The login profile waits up to 30 seconds for the service-created session and
+attaches only on `/dev/tty1`; SSH, serial consoles, and other TTYs do not attach.
 
-```bash
-if [[ "$(tty)" == "/dev/tty1" ]] && command -v bpytop >/dev/null; then
-    bpytop
-    printf 'Comandos da appliance: cat /root/README-split-models.txt\n'
-fi
-```
-
-Consequences:
-
-- `bpytop` opens only on `/dev/tty1`.
-- Pressing `q` returns to the root shell.
-- SSH, serial consoles, other TTYs, and `/dev/pts/*` do not auto-open it.
+- The worker pane remains a shell after the worker exits, allowing promotion
+  to master in the visible session.
 - No `sudo` is needed because the login is already root.
 - Getty does not wait for the network. The worker independently waits for
   `network-online.target`.
@@ -384,54 +379,33 @@ Transformers until inference is actually started.
 
 ## Future Model Distribution Proposal
 
-Proposed optimization: download model files from Hugging Face once on the
-master, then distribute them to workers over the LAN instead of letting every
-worker repeat the WAN download.
+Proposed flow: Hugging Face -> one master download -> LAN distribution -> each
+worker loads its assigned tensors. Rsync reduces WAN traffic but fresh nodes
+still receive the whole monolithic file. Sharded checkpoints can distribute
+only required shards. Avoiding full copies of monolithic safetensors requires
+per-node safetensors extraction or a tensor-aware service. Authentication,
+checksums, failure cleanup, master RAM, and startup synchronization remain open.
+This proposal is not implemented.
 
-Initial rsync design:
+## Integrated GPU Feasibility
 
-```text
-Hugging Face
-    -> master downloads checkpoint once
-    -> master exposes/stages checkpoint
-    -> workers fetch it from master with rsync
-    -> each worker loads only its assigned tensors
-```
+The current runtime is CPU-only: `pyproject.toml` selects PyTorch CPU wheels,
+the CLI defaults to `cpu`, and TorchAO quantization rejects other devices.
 
-Benefits:
+- Intel UHD 730 is not in PyTorch's validated XPU client list, which currently
+  names Arc and Core Ultra Arc hardware. OpenVINO officially supports the Intel
+  UHD family, but Optimum's `OVModelForCausalLM` is a complete compiled graph;
+  using it for this layer pipeline requires a new partial-graph/KV-cache backend.
+- Radeon Vega 6 is absent from the official ROCm compatibility matrix. The
+  practical accelerator path is llama.cpp with Vulkan, not this PyTorch worker.
+- llama.cpp officially supports Vulkan and an RPC backend that distributes
+  weights and KV cache across local and remote devices. Its RPC documentation
+  labels the backend proof-of-concept, fragile, and insecure.
 
-- Only one internet download per cluster run.
-- LAN transfer is normally faster and avoids Hugging Face rate-limit pressure.
-- Every node receives the exact same checkpoint revision.
-- Fits the stateless design because worker copies can remain under `/run`.
-
-Limitations:
-
-- Fresh stateless workers have no previous file, so rsync delta transfer gives
-  little benefit; rsync mainly replaces repeated WAN downloads with LAN copies.
-- A monolithic checkpoint is still copied in full to every worker.
-- The master needs enough RAM for its own model slice, Hugging Face cache, and
-  serving the checkpoint while workers fetch it.
-- `rsync` is not currently installed or exposed as a service in the appliance.
-- Authentication, worker addressing, partial-transfer cleanup, checksum
-  validation, and failure handling need a protocol decision.
-- Workers must not start model loading until distribution completes.
-
-More efficient later design:
-
-```text
-master downloads once
-    -> reads checkpoint/index
-    -> creates or serves only each node's required files/tensors
-    -> each worker receives only its layer slice
-```
-
-For already-sharded Hugging Face models, the master can distribute only the
-required existing shard files. For monolithic safetensors, avoiding a full copy
-requires the master to create per-node safetensors files or implement a
-range/tensor-aware service. That is a larger change than adding rsync.
-
-This model-distribution proposal is recorded only; it is not implemented.
+Keep the validated CPU split as the production path. The best cross-vendor
+experiment is a separate GGUF llama.cpp Vulkan+RPC spike on an isolated LAN,
+starting with a 0.5B model and comparing CPU, each iGPU, and two-node RPC.
+OpenVINO should be evaluated separately as an Intel-only backend.
 
 ## Model and Cluster Limits
 
@@ -454,18 +428,19 @@ The source passed:
 
 ```text
 uv run --extra plots python -m unittest discover -s tests
-91 tests passed
+102 tests passed
 ```
 
 Also validated:
 
 ```text
-bash -n deploy/archiso/airootfs/etc/initcpio/hooks/casper-compat
+bash -n on Casper, tmux, monitor, and login scripts; git diff --check
 ```
 
 The test suite includes regressions for stateless runtime paths, root autologin,
 `bpytop`, Casper layout, initramfs hook ordering, filesystem anti-replay mount
-options, cluster defaults, lightweight imports, and framing behavior.
+options, classified errors, command examples, cluster defaults, lightweight
+imports, and framing behavior.
 
 ## Relevant Files
 
@@ -476,22 +451,25 @@ options, cluster defaults, lightweight imports, and framing behavior.
   `/root/split-master.sh`, and `/root/README-split-models.txt` under `airootfs`.
 - Protocol: `docs/protocol.md`, `split_lm/io/framing.py`, and
   `split_lm/io/protocol.py`.
+- Operator UX: `split_lm/errors.py`, `split_lm/command_examples.py`, and the
+  `split-models-{tmux,monitor}` appliance scripts.
 - Split runtime: `split_lm/cluster/{plan,master}.py`,
   `split_lm/model/{loader,runner}.py`, and `split_lm/node/{head,worker}.py`.
 - Regressions: `tests/test_archiso.py` and `tests/test_cluster.py`.
 
 ## Next Steps
 
-1. Test the final ISO through the actual immutable LCC GRUB entry.
-2. Decide whether `/root/split-master.sh` should automatically stop and later
+1. Rebuild the ISO so the new tmux, errors, and help behavior is included.
+2. Test the rebuilt ISO and the actual immutable LCC GRUB entry.
+3. Decide whether `/root/split-master.sh` should automatically stop and later
    restore the local worker during master promotion.
-3. Decide whether the first model-distribution implementation should use
+4. Decide whether the first model-distribution implementation should use
    rsync, an HTTP service, or a master-owned Hugging Face cache proxy.
-4. If full monolithic LAN copies are still too expensive, design per-node
+5. If full monolithic LAN copies are still too expensive, design per-node
    safetensors extraction and distribution.
-5. Fix the master launcher's initial status line so CLI `--max-new-tokens`
+6. Fix the master launcher's initial status line so CLI `--max-new-tokens`
    overrides are displayed accurately.
-6. Implement automatic worker subset selection when discovery returns more
+7. Implement automatic worker subset selection when discovery returns more
    nodes than the model has layers or the 24-node limit allows.
-7. Commit and push only the intended project changes after reviewing the dirty
+8. Commit and push only the intended project changes after reviewing the dirty
    worktree and excluding unrelated user files.

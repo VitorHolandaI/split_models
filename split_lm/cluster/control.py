@@ -12,6 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Protocol
 
+from ..errors import ClusterError
 from ..io.framing import _recv_msg, _send_msg
 from ..benchmark_profiles import RUNTIME_PRECISIONS
 
@@ -200,17 +201,41 @@ def _handle_request(node_id: str, request: object,
     return {"type": "STARTED", "node": node_id, "pid": started.pid}, started
 
 
-def _serve_connection(connection: socket.socket, node_id: str,
-                      process: WorkerProcess | None,
-                      factory: ProcessFactory) -> WorkerProcess | None:
+def _agent_error(node_id: str, hostname: str, address: str,
+                 stage: str, exc: Exception) -> ClusterError:
+    return ClusterError.from_exception(
+        "agent", node_id, hostname, address, stage, exc)
+
+
+def _connection_response(connection: socket.socket, node_id: str,
+                         process: WorkerProcess | None, factory: ProcessFactory,
+                         hostname: str, address: str
+                         ) -> tuple[dict[str, object], WorkerProcess | None]:
     try:
-        response, process = _handle_request(node_id, _recv_msg(connection), process, factory)
+        request = _recv_msg(connection)
+    except (OSError, ValueError) as exc:
+        error = _agent_error(node_id, hostname, address, "agent.receive_request", exc)
+        return error.to_payload(), process
+    try:
+        return _handle_request(node_id, request, process, factory)
     except (JobValidationError, OSError, ValueError) as exc:
-        response = {"type": "ERROR", "node": node_id, "message": str(exc)}
+        stage = ("agent.validate_request" if isinstance(exc, JobValidationError)
+                 else "agent.handle_request")
+        return _agent_error(node_id, hostname, address, stage, exc).to_payload(), process
+
+
+def _serve_connection(connection: socket.socket, node_id: str,
+                       process: WorkerProcess | None,
+                       factory: ProcessFactory) -> WorkerProcess | None:
+    hostname = socket.gethostname()
+    address = str(connection.getsockname()[0])
+    response, process = _connection_response(
+        connection, node_id, process, factory, hostname, address)
     try:
         _send_msg(connection, response)
     except OSError as exc:
-        log.warning("cliente de controle desconectou antes da resposta: %s", exc)
+        error = _agent_error(node_id, hostname, address, "agent.send_response", exc)
+        log.exception("%s", error)
     return process
 
 

@@ -1,5 +1,7 @@
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 
@@ -77,12 +79,52 @@ class ArchisoInstallFlowTest(unittest.TestCase):
         autologin = (ARCHISO / "airootfs" / "etc" / "systemd" / "system" /
                      "getty@tty1.service.d" / "autologin.conf")
         profile = ARCHISO / "airootfs" / "root" / ".bash_profile"
+        service = (ARCHISO / "airootfs" / "etc" / "systemd" / "system" /
+                   "split-models.service")
+        tmux_launcher = (ARCHISO / "airootfs" / "usr" / "local" / "bin" /
+                         "split-models-tmux")
+        monitor = (ARCHISO / "airootfs" / "usr" / "local" / "bin" /
+                   "split-models-monitor")
 
         self.assertIn("bpytop", packages)
         self.assertIn("--autologin root", autologin.read_text(encoding="utf-8"))
         startup = profile.read_text(encoding="utf-8")
         self.assertIn("/dev/tty1", startup)
-        self.assertIn("bpytop", startup)
+        self.assertIn("tmux attach-session -t split-models", startup)
+        self.assertNotIn("bpytop", startup)
+        self.assertIn("split-models-tmux", service.read_text(encoding="utf-8"))
+        layout = tmux_launcher.read_text(encoding="utf-8")
+        self.assertIn("new-session", layout)
+        self.assertIn("split-window -h -p 35", layout)
+        monitor_script = monitor.read_text(encoding="utf-8")
+        self.assertIn("bpytop", monitor_script)
+        self.assertIn("exec /usr/bin/bash", monitor_script)
+
+    def test_tmux_status_keeps_role_node_id_and_ip_visible(self):
+        bin_dir = ARCHISO / "airootfs" / "usr" / "local" / "bin"
+        status_script = bin_dir / "split-models-status"
+        session_script = (bin_dir / "split-models-session").read_text(encoding="utf-8")
+        tmux_script = (bin_dir / "split-models-tmux").read_text(encoding="utf-8")
+        master_script = (ARCHISO / "airootfs" / "root" /
+                         "split-master.sh").read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as runtime:
+            Path(runtime, "role").write_text("worker\n", encoding="utf-8")
+            Path(runtime, "node-id").write_text("node-abcd1234\n", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", str(status_script)], check=True, capture_output=True, text=True,
+                env=os.environ | {"SPLIT_RUNTIME_DIR": runtime,
+                                  "SPLIT_NODE_IP": "192.168.50.12"})
+
+        self.assertEqual(
+            result.stdout.strip(),
+            "role=worker | node=node-abcd1234 | ip=192.168.50.12")
+        self.assertIn("--node-id", session_script)
+        self.assertIn("/run/split-models/node-id", session_script)
+        self.assertIn("status-right", tmux_script)
+        self.assertIn("split-models-status", tmux_script)
+        self.assertIn("printf 'master", master_script)
+        self.assertIn("/run/split-models/role", master_script)
 
     def test_build_enables_archiso_network_services(self):
         build_script = (ROOT / "deploy" / "build_archiso.sh").read_text(

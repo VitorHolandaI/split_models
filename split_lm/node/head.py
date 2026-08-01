@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import torch
 
 from ..context_benchmark import build_context_ids, write_context_outputs
+from ..errors import ClusterError
 from ..io.network import _connect, _control_server, _wait_ready, _send_stop, _recv_token, _configure_connected_socket
 from ..io.protocol import _send, NetworkStats
 from ..metrics import (
@@ -82,7 +83,7 @@ def _generate_response(tokenizer, ids, head_model, device, max_new, conn,
         _send_head_state(conn, ids, head_model, device, stats, cache_state,
                          net_stats, step == 0)
         if errors:
-            raise RuntimeError(errors[-1])
+            raise ClusterError.from_payload(errors[-1])
         wait_started = time.perf_counter()
         token, tok = _recv_token(srv_tok, tok, device, net_stats)
         arrived_at = time.perf_counter()

@@ -8,6 +8,7 @@ import sys
 from collections.abc import Sequence
 from typing import Protocol
 
+from ..errors import ClusterError
 from .control import VerticalJob, request_agent
 from .plan import ClusterNode, WorkerAssignment, VerticalPlan, build_vertical_plan
 
@@ -71,6 +72,19 @@ def _agent_address(assignment: WorkerAssignment) -> tuple[str, int]:
     return assignment.node.address, assignment.node.control_port
 
 
+def _request_start(assignment: WorkerAssignment, message: dict[str, object],
+                   requester: AgentRequester) -> dict[str, object]:
+    try:
+        return requester(_agent_address(assignment), message)
+    except ClusterError:
+        raise
+    except Exception as exc:
+        node = assignment.node
+        raise ClusterError.from_exception(
+            "master", node.node_id, node.hostname, node.address,
+            "master.contact_agent", exc) from exc
+
+
 def _start_workers(plan: VerticalPlan, model: str, total_layers: int,
                    max_new_tokens: int, precision: str,
                    requester: AgentRequester) -> list[WorkerAssignment]:
@@ -80,7 +94,9 @@ def _start_workers(plan: VerticalPlan, model: str, total_layers: int,
             job = job_for_assignment(
                 assignment, model, total_layers, max_new_tokens, precision)
             message = {"type": "START", "job": job.to_payload()}
-            response = requester(_agent_address(assignment), message)
+            response = _request_start(assignment, message, requester)
+            if response.get("type") == "ERROR":
+                raise ClusterError.from_payload(response)
             if response.get("type") != "STARTED":
                 raise RuntimeError(f"worker={assignment.node.node_id} recusou START: {response}")
             log.info("worker %s iniciou pid=%s", assignment.node.node_id, response.get("pid"))

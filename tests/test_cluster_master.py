@@ -3,6 +3,7 @@ from collections.abc import Sequence
 
 from split_lm.cluster.master import head_command, job_for_assignment, run_vertical_cluster
 from split_lm.cluster.plan import ClusterNode, WorkerAssignment
+from split_lm.errors import ClusterError
 
 
 class FakeAgentRequester:
@@ -22,6 +23,21 @@ class FakeHeadRunner:
 
     def __call__(self, command: Sequence[str]) -> None:
         self.commands.append(tuple(command))
+
+
+class FakeErrorAgentRequester:
+    def __call__(self, address: tuple[str, int], message: dict[str, object],
+                 timeout: float = 5.0) -> dict[str, object]:
+        error = OSError(98, "Address already in use")
+        return ClusterError.from_exception(
+            "worker", "node-2", "worker-2", address[0],
+            "worker.bind_inference", error).to_payload()
+
+
+class FakeDisconnectedAgentRequester:
+    def __call__(self, address: tuple[str, int], message: dict[str, object],
+                 timeout: float = 5.0) -> dict[str, object]:
+        raise ConnectionError(f"cannot connect to {address}")
 
 
 def sample_assignment() -> WorkerAssignment:
@@ -84,6 +100,25 @@ class MasterJobTest(unittest.TestCase):
                          ["START", "STOP"])
         self.assertEqual(len(runner.commands), 1)
         self.assertIn("--interactive", runner.commands[0])
+
+    def test_remote_worker_error_keeps_machine_stage_and_cause(self):
+        with self.assertRaisesRegex(
+                ClusterError,
+                "machine=node-2/worker-2@10.66.66.8.*worker.bind_inference.*errno=98"):
+            run_vertical_cluster(
+                "Qwen/Qwen2.5-0.5B", 24, "10.66.66.14",
+                (sample_assignment().node,), 50, 120,
+                FakeErrorAgentRequester(), FakeHeadRunner())
+
+    def test_agent_connection_error_identifies_planned_machine(self):
+        with self.assertRaisesRegex(
+                ClusterError,
+                "origin=master machine=node-2/worker-2@10.66.66.8 "
+                "stage=master.contact_agent cause=connection_failed"):
+            run_vertical_cluster(
+                "Qwen/Qwen2.5-0.5B", 24, "10.66.66.14",
+                (sample_assignment().node,), 50, 120,
+                FakeDisconnectedAgentRequester(), FakeHeadRunner())
 
 
 if __name__ == "__main__":

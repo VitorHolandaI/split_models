@@ -6,7 +6,7 @@ import threading
 import unittest
 
 from split_lm.cluster.cli import (
-    _build_parser, format_nodes, local_benchmark_command, random_node_id,
+    _build_parser, format_nodes, local_benchmark_command, main as cluster_main, random_node_id,
     source_address_for)
 from split_lm.cluster.discovery import (
     DiscoveryReplyError, decode_reply, discover_nodes, encode_reply, local_node,
@@ -108,6 +108,18 @@ class NodeTableTest(unittest.TestCase):
         self.assertIn("--benchmark-profile", help_text)
         self.assertNotIn("--broadcast", help_text)
 
+    def test_master_help_explains_model_tokens_memory_and_examples(self):
+        output = io.StringIO()
+
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(output):
+            _build_parser().parse_args(["master", "--help"])
+
+        help_text = output.getvalue()
+        self.assertIn("repositorio Hugging Face", help_text)
+        self.assertIn("limite de tokens", help_text)
+        self.assertIn("memoria", help_text)
+        self.assertIn("split-cluster exemplos", help_text)
+
     def test_local_benchmark_command_uses_shared_profile_file(self):
         command = local_benchmark_command(
             "benchmarks.toml", "context-realistic", executable="/venv/python")
@@ -115,6 +127,29 @@ class NodeTableTest(unittest.TestCase):
         self.assertEqual(command[:3], ["/venv/python", "-m", "tools.benchmark_single_model"])
         self.assertIn("benchmarks.toml", command)
         self.assertIn("context-realistic", command)
+
+    def test_examples_flag_and_command_show_default_model_and_all_profiles(self):
+        command_output = io.StringIO()
+        flag_output = io.StringIO()
+
+        with contextlib.redirect_stdout(command_output):
+            cluster_main(["exemplos"])
+        with contextlib.redirect_stdout(flag_output):
+            cluster_main(["--comandos-exemplos"])
+
+        self.assertEqual(flag_output.getvalue(), command_output.getvalue())
+        examples = command_output.getvalue()
+        self.assertIn("Qwen/Qwen2.5-0.5B-Instruct", examples)
+        self.assertIn("Qwen/Qwen2.5-3B-Instruct", examples)
+        for profile in ("context-quick", "context-deep", "context-realistic",
+                        "poem-realistic", "decode-long", "context-quick-int8",
+                        "context-quick-int4"):
+            self.assertIn(
+                f"split-cluster master --discover --benchmark-profile {profile}",
+                examples)
+            self.assertIn(
+                f"split-cluster benchmark-local --benchmark-profile {profile}",
+                examples)
 
     def test_default_worker_ids_are_random_and_safe(self):
         first = random_node_id()

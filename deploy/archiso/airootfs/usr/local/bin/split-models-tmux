@@ -1,0 +1,13 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+session="split-models"
+/usr/bin/tmux new-session -d -s "$session" -n node \
+    /usr/local/bin/split-models-session
+/usr/bin/tmux split-window -h -p 35 -t "$session:node" \
+    /usr/local/bin/split-models-monitor
+/usr/bin/tmux set-option -t "$session" status-interval 2
+/usr/bin/tmux set-option -t "$session" status-left ' split-models '
+/usr/bin/tmux set-option -t "$session" status-right-length 100
+/usr/bin/tmux set-option -t "$session" status-right \
+    '#(/usr/local/bin/split-models-status) '

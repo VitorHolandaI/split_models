@@ -1,14 +1,18 @@
 SPLIT MODELS - GUIA RAPIDO
 ==========================
 
-O worker inicia automaticamente no boot dentro da sessao tmux "split-models".
-Pressione Ctrl-C nessa sessao antes de promover o no a master.
-No console fisico, bpytop abre automaticamente. Pressione q para voltar ao shell.
+O tty1 anexa automaticamente a sessao tmux "split-models". O painel esquerdo
+mostra o worker/log (65%) e o direito abre bpytop (35%). Use Ctrl-b + setas para
+alternar. Pressione q no bpytop para deixar um shell no painel direito.
+Pressione Ctrl-C no painel do worker antes de promover o no a master.
+A barra inferior mostra sempre role, node ID e IPv4 local desta maquina.
 
 AJUDA COMPLETA
   split-cluster --help
   split-cluster worker --help
   split-cluster master --help
+  split-cluster exemplos
+  split-cluster --comandos-exemplos
   split-lm --help
   cat /opt/split-models/docs/protocol.md
 

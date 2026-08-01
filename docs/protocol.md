@@ -216,7 +216,7 @@ constroi uma lista de argumentos e usa `subprocess.Popen` sem `shell=True`.
 |---|---|---|
 | `STARTED` | `node`, `pid` | Processo criado; ainda nao significa modelo carregado |
 | `STOPPED` | `node` | Processo encerrado ou nenhum processo ativo |
-| `ERROR` | `node`, `message` | Request invalido ou agente ocupado |
+| `ERROR` | registro classificado abaixo | Request invalido ou falha do agente |
 
 Um segundo `START` e rejeitado enquanto o subprocesso anterior estiver vivo.
 Quando o subprocesso termina, o agente pode aceitar um novo job.
@@ -229,12 +229,36 @@ framing `4-byte size + JSON`.
 | `type` | Origem -> destino | Campos |
 |---|---|---|
 | `READY` | worker -> head | `type`, `node` |
-| `ERROR` | worker -> head | `type`, `node`, `stage`, `message` |
+| `ERROR` | worker -> head | registro classificado abaixo |
 | `STOP` | head -> worker | `type`, `node=head` |
 
-`stage` pode ser `startup` ou `run`. O head nao inicia a geracao antes de
-receber um `READY` de cada worker esperado. O `STOP` runtime e best-effort; a
-limpeza garantida no fluxo normal e feita tambem pelo `STOP` enviado aos agentes.
+Todos os componentes usam o mesmo `ERROR` versionado:
+
+```json
+{
+  "type": "ERROR",
+  "version": 1,
+  "origin": "worker",
+  "machine": {
+    "node_id": "node-25a2a52c",
+    "hostname": "worker-2",
+    "address": "192.168.122.83"
+  },
+  "stage": "worker.startup",
+  "cause": {
+    "code": "address_in_use",
+    "type": "OSError",
+    "message": "[Errno 98] Address already in use",
+    "errno": 98
+  }
+}
+```
+
+`origin` identifica `agent`, `worker`, `head`, `master` ou `discovery`;
+`machine` identifica onde ocorreu; `stage` localiza a operacao; e `cause`
+preserva classificacao, classe Python, mensagem e `errno`. O terminal mostra
+essa classificacao e o traceback completo. O head nao inicia a geracao antes de
+receber todos os `READY`. O `STOP` runtime continua best-effort.
 
 ## Frame Binario De Tensor
 

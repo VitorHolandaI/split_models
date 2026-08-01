@@ -5,6 +5,9 @@ Vertical layer splitting for CPU inference across trusted LAN machines.
 The complete wire protocol, startup sequence, per-machine payloads and failure
 behavior are documented in [`docs/protocol.md`](docs/protocol.md).
 
+Run `split-cluster exemplos` or `split-cluster --comandos-exemplos` to print
+runnable commands for the default model and every configured benchmark profile.
+
 ## Worker Agent
 
 Each worker discovers itself with a random ID and waits for validated jobs:

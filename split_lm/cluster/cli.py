@@ -14,7 +14,9 @@ from collections.abc import Sequence
 from ..benchmark_profiles import (
     RUNTIME_PRECISIONS, format_profiles, load_profile, load_profiles,
     profile_overrides)
+from ..command_examples import format_command_examples
 from ..constants import DEFAULT_CHAT_MODEL
+from ..errors import ClusterError
 from .control import serve_control
 from .discovery import DISCOVERY_PORT, discover_nodes, local_node, serve_discovery
 from .master import run_vertical_cluster
@@ -73,15 +75,29 @@ def _add_master_arguments(parser: argparse.ArgumentParser) -> None:
                         help="master: encontrar workers via UDP")
     parser.add_argument("--head-address", default=None,
                         help="master: IP anunciado aos workers; por padrao detecta pela rota")
-    parser.add_argument("--model", default=DEFAULT_CHAT_MODEL)
-    parser.add_argument("--max-new-tokens", type=int, default=50)
-    parser.add_argument("--ready-timeout", type=float, default=300)
+    parser.add_argument(
+        "--model", default=DEFAULT_CHAT_MODEL,
+        help="repositorio Hugging Face; todos os nos usam a mesma revisao")
+    parser.add_argument(
+        "--max-new-tokens", type=int, default=50,
+        help="limite de tokens novos gerados para cada resposta")
+    parser.add_argument(
+        "--ready-timeout", type=float, default=300,
+        help="segundos para download, carga do modelo e READY dos workers")
     parser.add_argument("--context-sizes", default=None,
                         help="benchmark: contextos crescentes, ex 128,256,512")
-    parser.add_argument("--metrics-file", default="benchmark-results/generation.jsonl")
-    parser.add_argument("--benchmark-output", default="benchmark-results/context-sweep")
-    parser.add_argument("--precision", choices=RUNTIME_PRECISIONS, default="bfloat16")
-    parser.add_argument("--warmup-runs", type=int, default=0)
+    parser.add_argument(
+        "--metrics-file", default="benchmark-results/generation.jsonl",
+        help="JSONL onde cada geracao registra latencia e throughput")
+    parser.add_argument(
+        "--benchmark-output", default="benchmark-results/context-sweep",
+        help="prefixo dos arquivos CSV e SVG de benchmark")
+    parser.add_argument(
+        "--precision", choices=RUNTIME_PRECISIONS, default="bfloat16",
+        help="precisao dos pesos; valores menores podem reduzir memoria")
+    parser.add_argument(
+        "--warmup-runs", type=int, default=0,
+        help="geracoes descartadas antes da medicao")
     parser.add_argument("--prompt", default=None,
                         help="natural prompt benchmark; profile values override this")
 
@@ -89,24 +105,39 @@ def _add_master_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_profile_arguments(parser: argparse.ArgumentParser,
                            required: bool = False) -> None:
     parser.add_argument("--benchmark-config", default="benchmarks.toml",
-                        help="TOML containing named benchmark profiles")
+                        help="arquivo TOML com modelos e perfis nomeados")
     parser.add_argument("--benchmark-profile", required=required,
-                        help="profile name shown by `split-cluster benchmarks`")
+                        help="perfil mostrado por `split-cluster benchmarks`")
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="split-cluster", description="cluster split LLM")
-    commands = parser.add_subparsers(dest="role", required=True, title="commands")
-    worker = commands.add_parser("worker", help="wait for vertical jobs")
+    parser = argparse.ArgumentParser(
+        prog="split-cluster",
+        description="Descobre maquinas e executa inferencia vertical distribuida.",
+        epilog="Use `split-cluster exemplos` para ver fluxos completos.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument(
+        "--comandos-exemplos", action="store_true",
+        help="mostrar comandos completos para modelos e perfis configurados")
+    commands = parser.add_subparsers(dest="role", title="comandos")
+    worker = commands.add_parser(
+        "worker", help="anunciar este no e aguardar jobs verticais")
     _add_worker_arguments(worker)
-    nodes = commands.add_parser("nodes", help="list discovered workers")
+    nodes = commands.add_parser("nodes", help="descobrir e listar workers da LAN")
     _add_discovery_arguments(nodes)
-    master = commands.add_parser("master", help="run interactive or benchmark split")
+    master = commands.add_parser(
+        "master", help="executar chat ou benchmark usando workers descobertos",
+        description="Promove este no a head e distribui as camadas entre workers.",
+        epilog="Use `split-cluster exemplos` para comandos completos por modelo.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     _add_discovery_arguments(master)
     _add_master_arguments(master)
     _add_profile_arguments(master)
-    profiles = commands.add_parser("benchmarks", help="list named benchmark profiles")
+    profiles = commands.add_parser("benchmarks", help="listar perfis de teste configurados")
     profiles.add_argument("--benchmark-config", default="benchmarks.toml")
+    examples = commands.add_parser(
+        "exemplos", help="mostrar comandos para cada modelo e perfil de teste")
+    examples.add_argument("--benchmark-config", default="benchmarks.toml")
     local = commands.add_parser(
         "benchmark-local", help="run a profile locally",
         description="Run one named profile on a full local model")
@@ -185,12 +216,15 @@ def _run_master(args: argparse.Namespace) -> None:
         benchmark_prompt=args.prompt)
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    """Run the cluster CLI.
-
-    Usage example: `split-cluster nodes --timeout 3`.
-    """
-    args = _build_parser().parse_args(argv)
+def _run_cli(argv: Sequence[str] | None = None) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.comandos_exemplos or args.role == "exemplos":
+        config = getattr(args, "benchmark_config", "benchmarks.toml")
+        print(format_command_examples(DEFAULT_CHAT_MODEL, load_profiles(config)))
+        return
+    if args.role is None:
+        parser.error("informe um comando ou use --comandos-exemplos")
     if args.role == "benchmarks":
         print(format_profiles(load_profiles(args.benchmark_config)))
         return
@@ -205,6 +239,26 @@ def main(argv: Sequence[str] | None = None) -> None:
         _run_master(args)
         return
     _run_worker_agent(args)
+
+
+def _cli_origin(argv: Sequence[str] | None) -> str:
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    role = arguments[0] if arguments else "cluster"
+    return {"worker": "agent", "master": "master", "nodes": "discovery"}.get(
+        role, "cluster")
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Run the cluster CLI and classify failures with local machine context."""
+    try:
+        _run_cli(argv)
+    except ClusterError:
+        raise
+    except Exception as exc:
+        origin = _cli_origin(argv)
+        raise ClusterError.from_exception(
+            origin, "local", socket.gethostname(), "local",
+            f"{origin}.cli", exc) from exc
 
 
 if __name__ == "__main__":

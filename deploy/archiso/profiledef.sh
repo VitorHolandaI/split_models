@@ -21,6 +21,9 @@ file_permissions=(
   ["/etc/initcpio/install/casper-compat"]="0:0:755"
   ["/usr/local/bin/split-cluster"]="0:0:755"
   ["/usr/local/bin/split-lm"]="0:0:755"
+  ["/usr/local/bin/split-models-monitor"]="0:0:755"
   ["/usr/local/bin/split-models-python"]="0:0:755"
   ["/usr/local/bin/split-models-session"]="0:0:755"
+  ["/usr/local/bin/split-models-status"]="0:0:755"
+  ["/usr/local/bin/split-models-tmux"]="0:0:755"
 )
