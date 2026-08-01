@@ -154,15 +154,31 @@ a saida do `--list-devices` sugere. Confirme sempre no log de
 A ideia obvia e dar quase tudo ao dispositivo rapido. Nenhuma tentativa com o
 27B ficou melhor que a 3060 sozinha:
 
-| razao | efeito real (RPC primeiro) | resultado |
-|---|---|---|
-| `20,80` | 20% na 3060, 80% no iGPU | falhou ao criar contexto |
-| `30,70` | 30% na 3060, 70% no iGPU | nao terminou em 10 minutos |
-| `10,90` | 10% na 3060, 90% no iGPU | mais lento ainda |
+Com o `Qwen3.5-9B` em Q6_K, `-c 4096`, RPC no indice 0 e iGPU no indice 1:
 
-As tres davam a maior parte ao dispositivo lento, o contrario da intencao. As
-medicoes valem como evidencia de que carregar o iGPU piora tudo, nao como teste
-da hipotese oposta -- essa ainda falta medir, com `90,10`.
+| razao | carga real | geracao |
+|---|---|---|
+| `10,90` | 90% no iGPU | 5.1 tok/s |
+| `--fit on` (sem razao fixa) | ~44% no iGPU | 6.8 - 8.4 tok/s |
+| **`90,10`** | **90% na 3060** | **14.7 tok/s** |
+| sem dividir | tudo na 3060 | **42.6 tok/s** |
+
+Acertar a ordem quase triplicou o split, de 5.1 para 14.7 tok/s. A penalidade
+contra usar so a maquina rapida caiu de 6.3x para 2.9x.
+
+E continua penalidade. Mesmo com 90% do trabalho na 3060, os 10% restantes no
+iGPU custam em cada token, e a rede entra na conta duas vezes por token. O
+melhor split medido perde por quase tres vezes de simplesmente nao dividir.
+
+Com o 27B, onde a proporcao importava mais, as tentativas foram feitas com a
+ordem invertida e portanto sobrecarregando o iGPU:
+
+| razao | carga real | resultado |
+|---|---|---|
+| `20,80` | 80% no iGPU | falhou ao criar contexto |
+| `30,70` | 70% no iGPU | nao terminou em 10 minutos |
+
+Falta refazer essas com a ordem correta.
 
 O espaco util e estreito por construcao. Dar pouco ao dispositivo lento nao
 adianta, porque toda layer nele custa em **todo** token; dar muito ao rapido
