@@ -174,6 +174,16 @@ class LlamaStagingTest(unittest.TestCase):
              "/usr/bin/libggml-vulkan.so=0:0:755",
              "/usr/bin/llama-cli=0:0:755"])
 
+    def test_missing_dependency_names_packages_for_both_distributions(self):
+        recipe = LLAMA_LIB.read_text(encoding="utf-8")
+
+        # A frota mistura Arch (a appliance) e Ubuntu (maquinas com GPU que nao
+        # bootam a ISO). Dizer so "pacman" manda o operador do Ubuntu procurar
+        # um pacote que nao existe ali.
+        self.assertIn("sudo pacman -S --needed", recipe)
+        self.assertIn("sudo apt install -y", recipe)
+        self.assertIn("libvulkan-dev", recipe)
+
     def test_bare_metal_build_shares_the_pin_with_the_image(self):
         script = (ROOT / "deploy" / "build_llamacpp_binaries.sh").read_text(
             encoding="utf-8")

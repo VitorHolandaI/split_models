@@ -51,23 +51,35 @@ llama_cmake_options=(
     -DLLAMA_TOOLS_INSTALL=ON
 )
 
+# A frota mistura Arch (a appliance) e Ubuntu (maquinas com GPU que nao bootam
+# a ISO), entao a mensagem nomeia os dois gerenciadores: dizer so "pacman" numa
+# maquina Ubuntu manda o operador procurar um pacote que nao existe ali.
+_install_hint() {
+    printf '  Arch:   sudo pacman -S --needed %s\n' "$1" >&2
+    printf '  Ubuntu: sudo apt install -y %s\n' "$2" >&2
+}
+
 require_llama_build_commands() {
     local command_name
     for command_name in cmake curl gcc g++ glslc; do
         command -v "$command_name" >/dev/null || {
             printf 'comando ausente: %s\n' "$command_name" >&2
-            printf 'instale com: sudo pacman -S --needed cmake shaderc vulkan-headers spirv-headers\n' >&2
+            _install_hint "cmake shaderc vulkan-headers spirv-headers" \
+                "build-essential cmake curl glslc libvulkan-dev spirv-headers"
             exit 1
         }
     done
-    # spirv-headers e pacote separado de spirv-tools no Arch, e a falta dele so
-    # aparece no configure do backend Vulkan (ggml/src/ggml-vulkan/CMakeLists.txt).
+    # spirv-headers e pacote separado de spirv-tools nas duas distribuicoes, e a
+    # falta dele so aparece no configure do backend Vulkan
+    # (ggml/src/ggml-vulkan/CMakeLists.txt). O caminho do arquivo e o mesmo nas
+    # duas, entao uma checagem serve para ambas.
     local header_file
     for header_file in /usr/include/vulkan/vulkan.h \
         /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake; do
         [[ -f "$header_file" ]] || {
             printf 'header de build ausente: %s\n' "$header_file" >&2
-            printf 'instale com: sudo pacman -S --needed vulkan-headers spirv-headers\n' >&2
+            _install_hint "vulkan-headers spirv-headers" \
+                "libvulkan-dev spirv-headers"
             exit 1
         }
     done
