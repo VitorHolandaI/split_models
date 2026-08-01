@@ -72,8 +72,13 @@ def decode_reply(payload: bytes, address: str) -> ClusterNode:
 
 
 def serve_discovery(node: ClusterNode, port: int = DISCOVERY_PORT,
-                    stop: threading.Event | None = None) -> None:
+                    stop: threading.Event | None = None,
+                    ready: threading.Event | None = None) -> None:
     """Answer discovery probes for this node until `stop` is set.
+
+    `ready` is set once the port is bound. A caller that starts this in a
+    thread and probes immediately would otherwise race the bind, and UDP sent
+    to an unbound port is discarded with no queue to catch it up.
 
     Usage example: `serve_discovery(local_node("node-a", 29510), stop=stop)`.
     """
@@ -81,6 +86,8 @@ def serve_discovery(node: ClusterNode, port: int = DISCOVERY_PORT,
     with _udp_socket() as sock:
         sock.bind(("", port))
         sock.settimeout(0.2)
+        if ready is not None:
+            ready.set()
         log.info("discovery de %s ouvindo em udp/%d", node.node_id, port)
         while stop is None or not stop.is_set():
             try:
@@ -120,9 +127,24 @@ def discover_nodes(port: int = DISCOVERY_PORT, timeout: float = 2.0,
 
     Usage example: `nodes = discover_nodes(timeout=3.0)`.
     """
+    found: dict[str, ClusterNode] = {}
     with _udp_socket() as sock:
         sock.bind(("", 0))
-        for _ in range(probes):
+        deadline = time.monotonic() + timeout
+        for attempt in range(probes):
             sock.sendto(_PROBE, (broadcast_address, port))
-        found = _collect_replies(sock, time.monotonic() + timeout)
+            found.update(_collect_replies(sock, _probe_window(deadline, timeout,
+                                                              attempt, probes)))
+            if time.monotonic() >= deadline:
+                break
     return tuple(sorted(found.values(), key=lambda node: node.node_id))
+
+
+# Probes espalhados pela janela, nao em rajada. Enviados de uma vez, os N probes
+# saem no mesmo instante e um worker que ainda esta ligando a porta perde todos:
+# UDP para porta nao ligada e descartado sem fila, entao repetir nao adianta se
+# as repeticoes forem simultaneas.
+def _probe_window(deadline: float, timeout: float, attempt: int, probes: int) -> float:
+    if attempt == probes - 1:
+        return deadline
+    return min(deadline, time.monotonic() + timeout / probes)

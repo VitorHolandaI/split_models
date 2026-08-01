@@ -3,6 +3,7 @@ import io
 import subprocess
 import sys
 import threading
+import time
 import unittest
 
 from split_lm.cluster.cli import (
@@ -175,12 +176,18 @@ class NodeTableTest(unittest.TestCase):
 
 class DiscoveryTest(unittest.TestCase):
     def _serve(self, node, port):
-        stop = threading.Event()
+        """Sobe o discovery e so retorna com a porta ja ligada.
+
+        Sem esperar por `ready` o teste corre com o bind, e um probe que chega
+        antes some sem deixar rastro: UDP para porta nao ligada nao tem fila.
+        """
+        stop, ready = threading.Event(), threading.Event()
         thread = threading.Thread(
-            target=serve_discovery, args=(node, port, stop), daemon=True)
+            target=serve_discovery, args=(node, port, stop, ready), daemon=True)
         thread.start()
         self.addCleanup(thread.join, 2)
         self.addCleanup(stop.set)
+        self.assertTrue(ready.wait(5), f"discovery nao ligou udp/{port} em 5s")
 
     def test_local_node_reports_usable_resources(self):
         node = local_node("node-a", 29510)
@@ -202,6 +209,30 @@ class DiscoveryTest(unittest.TestCase):
     def test_discover_returns_empty_without_nodes(self):
         self.assertEqual(
             discover_nodes(29501, timeout=0.3, broadcast_address="127.0.0.1"), ())
+
+    def test_discovery_reaches_a_node_that_binds_after_the_first_probe(self):
+        """Um worker ainda subindo tem que ser achado dentro da janela.
+
+        E o caso real de `split-cluster nodes` logo apos ligar as maquinas.
+        Com os probes em rajada todos saem antes do bind e some tudo; so o
+        espalhamento pela janela alcanca esse no.
+        """
+        stop, ready = threading.Event(), threading.Event()
+        node = local_node("node-lento", 29514)
+
+        def bind_late():
+            time.sleep(0.5)
+            serve_discovery(node, 29504, stop, ready)
+
+        thread = threading.Thread(target=bind_late, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 3)
+        self.addCleanup(stop.set)
+
+        found = discover_nodes(29504, timeout=3.0, broadcast_address="127.0.0.1",
+                               probes=6)
+
+        self.assertEqual([entry.node_id for entry in found], ["node-lento"])
 
     def test_discover_reports_each_node_once(self):
         self._serve(local_node("node-a", 29511), 29502)
