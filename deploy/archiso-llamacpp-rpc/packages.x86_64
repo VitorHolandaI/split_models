@@ -2,12 +2,16 @@
 # deploy/lib_archiso_build.sh:merge_overlay_packages. A lista base continua
 # valendo; aqui so entram os pacotes da variante.
 #
-# Runtime Vulkan. Intel UHD 730 usa vulkan-intel, AMD Vega 6 usa vulkan-radeon;
-# ambas as ICDs entram na mesma imagem para que um host so sirva as duas.
-# CUDA, ROCm, SYCL e OpenVINO ficam de fora: cada um vira outra variante, senao
-# esta ISO cresce e passa a depender do driver NVIDIA.
+# Runtime Vulkan. Intel UHD 730 usa vulkan-intel, AMD Vega 6 usa vulkan-radeon,
+# NVIDIA usa a ICD que vem em nvidia-utils; as tres entram na mesma imagem para
+# que um pen drive so sirva qualquer maquina da frota. Sem a ICD certa o
+# ggml-rpc-server nao falha: ele cai em CPU, e a GPU fica parada sem aviso.
+#
+# CUDA continua de fora. nvidia-utils traz o driver e a ICD Vulkan, que e o que
+# o backend precisa; o toolkit CUDA e outra variante, e dobraria o tamanho.
 vulkan-icd-loader
 vulkan-intel
 vulkan-radeon
 vulkan-tools
+nvidia-utils
 mesa

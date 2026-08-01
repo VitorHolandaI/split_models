@@ -174,6 +174,17 @@ class LlamaStagingTest(unittest.TestCase):
              "/usr/bin/libggml-vulkan.so=0:0:755",
              "/usr/bin/llama-cli=0:0:755"])
 
+    def test_bare_metal_build_shares_the_pin_with_the_image(self):
+        script = (ROOT / "deploy" / "build_llamacpp_binaries.sh").read_text(
+            encoding="utf-8")
+
+        # Maquinas que nao bootam a appliance tem que sair do mesmo commit: o
+        # backend RPC nao negocia versao, entao builds diferentes so falham em
+        # runtime, longe da causa.
+        self.assertIn("lib_llamacpp_build.sh", script)
+        self.assertNotIn("cmake -B", script)
+        self.assertIn("LAN isolada", script)
+
     def test_image_records_the_upstream_commit_on_disk(self):
         recipe = LLAMA_LIB.read_text(encoding="utf-8")
 
