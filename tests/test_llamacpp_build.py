@@ -86,6 +86,14 @@ class LlamaBuildOptionsTest(unittest.TestCase):
                          "GGML_MUSA", "GGML_METAL"):
             self.assertNotIn(excluded, self.options)
 
+    def test_requested_cuda_must_actually_arrive(self):
+        recipe = LLAMA_LIB.read_text(encoding="utf-8")
+
+        # Backend e plugin: sem libggml-cuda.so o worker sobe, cai em Vulkan e
+        # serve a mesma GPU mais devagar, sem nada indicando que CUDA sumiu.
+        self.assertIn("libggml-cuda.so", recipe)
+        self.assertIn("assert_requested_cuda_backend", recipe)
+
     def test_cuda_is_opt_in_and_off_by_default(self):
         without = run_llama_lib('llama_cuda_options').stdout.strip()
         with_cuda = run_llama_lib(

@@ -141,7 +141,20 @@ assert_llama_artifacts() {
             exit 1
         }
     done
+    assert_requested_cuda_backend
     assert_no_host_only_libraries
+}
+
+# Pedir CUDA e receber um build sem ela e silencioso: os backends sao plugins,
+# entao o worker sobe, cai em Vulkan e serve a mesma GPU mais devagar. Quem
+# pediu CUDA merece saber que nao recebeu.
+assert_requested_cuda_backend() {
+    [[ "${SPLIT_LLAMA_CUDA:-0}" == "1" ]] || return 0
+    [[ -f "$llama_destdir/usr/bin/libggml-cuda.so" ]] || {
+        printf 'SPLIT_LLAMA_CUDA=1 pedido, mas libggml-cuda.so nao foi instalado.\n' >&2
+        printf 'Confira se o nvcc esta presente: nvcc --version\n' >&2
+        exit 1
+    }
 }
 
 # Confere o binario, nao a opcao: a auto-deteccao de RDMA depende do que estiver
