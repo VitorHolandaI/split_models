@@ -235,6 +235,14 @@ class LlamaStagingTest(unittest.TestCase):
         self.assertIn("sudo apt install -y", recipe)
         self.assertIn("libvulkan-dev", recipe)
 
+    def test_https_support_is_checked_before_compiling(self):
+        recipe = LLAMA_LIB.read_text(encoding="utf-8")
+
+        # Sem os headers do OpenSSL o llama.cpp compila sem HTTPS e so recusa
+        # na hora de baixar o modelo, com a compilacao inteira ja gasta.
+        self.assertIn("/usr/include/openssl/ssl.h", recipe)
+        self.assertIn("libssl-dev", recipe)
+
     def test_bare_metal_build_shares_the_pin_with_the_image(self):
         script = (ROOT / "deploy" / "build_llamacpp_binaries.sh").read_text(
             encoding="utf-8")

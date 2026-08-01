@@ -78,13 +78,17 @@ require_llama_build_commands() {
     # falta dele so aparece no configure do backend Vulkan
     # (ggml/src/ggml-vulkan/CMakeLists.txt). O caminho do arquivo e o mesmo nas
     # duas, entao uma checagem serve para ambas.
+    # openssl entra na lista porque sua falta nao quebra o build: o llama.cpp
+    # compila sem HTTPS e so recusa na hora de baixar, com "HTTPS is not
+    # supported", depois de meia hora de compilacao ja gasta.
     local header_file
     for header_file in /usr/include/vulkan/vulkan.h \
-        /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake; do
+        /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake \
+        /usr/include/openssl/ssl.h; do
         [[ -f "$header_file" ]] || {
             printf 'header de build ausente: %s\n' "$header_file" >&2
-            _install_hint "vulkan-headers spirv-headers" \
-                "libvulkan-dev spirv-headers"
+            _install_hint "vulkan-headers spirv-headers openssl" \
+                "libvulkan-dev spirv-headers libssl-dev"
             exit 1
         }
     done
