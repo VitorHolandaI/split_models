@@ -20,6 +20,12 @@ llama_tree="$llama_cache/llama.cpp-$LLAMA_TAG"
 llama_tarball="$llama_cache/llama.cpp-$LLAMA_TAG.tar.gz"
 llama_destdir="$llama_cache/dest-$LLAMA_TAG"
 
+# GGML_RPC_RDMA=OFF e obrigatorio, nao preferencia. ggml/src/ggml-rpc/
+# CMakeLists.txt:12-22 procura libibverbs NO HOST DE BUILD e liga RDMA sozinho se
+# achar. Este host tem rdma-core; a ISO nao, entao libggml-rpc.so sairia linkada
+# contra uma lib ausente da imagem e o backend RPC nao carregaria -- so na
+# maquina fisica, longe daqui. O alvo e Ethernet, RDMA nao serve para nada aqui.
+#
 # GGML_BACKEND_DL carrega backend como plugin, entao a mesma imagem serve host
 # com e sem Vulkan: CPU vira fallback em vez de erro de link.
 # GGML_CPU_ALL_VARIANTS exige GGML_NATIVE=OFF e escolhe a ISA em runtime --
@@ -37,6 +43,7 @@ llama_cmake_options=(
     -DGGML_NATIVE=OFF
     -DGGML_VULKAN=ON
     -DGGML_RPC=ON
+    -DGGML_RPC_RDMA=OFF
     -DLLAMA_BUILD_TESTS=OFF
     -DLLAMA_BUILD_EXAMPLES=OFF
     -DLLAMA_BUILD_TOOLS=ON
@@ -49,15 +56,21 @@ require_llama_build_commands() {
     for command_name in cmake curl gcc g++ glslc; do
         command -v "$command_name" >/dev/null || {
             printf 'comando ausente: %s\n' "$command_name" >&2
-            printf 'instale com: sudo pacman -S --needed cmake shaderc vulkan-headers\n' >&2
+            printf 'instale com: sudo pacman -S --needed cmake shaderc vulkan-headers spirv-headers\n' >&2
             exit 1
         }
     done
-    [[ -f /usr/include/vulkan/vulkan.h ]] || {
-        printf 'headers Vulkan ausentes: /usr/include/vulkan/vulkan.h\n' >&2
-        printf 'instale com: sudo pacman -S --needed vulkan-headers\n' >&2
-        exit 1
-    }
+    # spirv-headers e pacote separado de spirv-tools no Arch, e a falta dele so
+    # aparece no configure do backend Vulkan (ggml/src/ggml-vulkan/CMakeLists.txt).
+    local header_file
+    for header_file in /usr/include/vulkan/vulkan.h \
+        /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake; do
+        [[ -f "$header_file" ]] || {
+            printf 'header de build ausente: %s\n' "$header_file" >&2
+            printf 'instale com: sudo pacman -S --needed vulkan-headers spirv-headers\n' >&2
+            exit 1
+        }
+    done
 }
 
 # O digest e conferido sempre, nao so no download: um tarball em cache corrompido
@@ -79,20 +92,39 @@ build_llama_binaries() {
     cmake --build "$llama_tree/build" --config Release --parallel "$(nproc)"
 }
 
-# ggml-rpc-server e o unico binario cuja ausencia nao aparece no build: ele
-# compila e simplesmente nao e instalado quando LLAMA_TOOLS_INSTALL sai do ar.
+# ggml-rpc-server e o binario cuja ausencia nao aparece no build: compila e
+# simplesmente nao e instalado quando LLAMA_TOOLS_INSTALL sai do ar. Os backends
+# entram na lista pelo mesmo motivo -- GGML_BACKEND_DL os torna plugin, entao um
+# backend que nao compilou vira "sem aceleracao" em runtime, nunca erro de build.
+#
+# Plugin de backend e instalado ao lado do executavel, em usr/bin, nao em
+# usr/lib: e onde o ggml procura em tempo de execucao.
 assert_llama_artifacts() {
     local expected
-    for expected in usr/bin/llama-cli usr/bin/llama-server usr/bin/ggml-rpc-server; do
-        [[ -x "$llama_destdir/$expected" ]] || {
+    for expected in usr/bin/llama-cli usr/bin/llama-server usr/bin/ggml-rpc-server \
+                    usr/bin/libggml-rpc.so usr/bin/libggml-vulkan.so; do
+        [[ -f "$llama_destdir/$expected" ]] || {
             printf 'artefato ausente apos install: %s\n' "$expected" >&2
             exit 1
         }
     done
-    compgen -G "$llama_destdir/usr/lib/libggml-rpc.so*" >/dev/null || {
-        printf 'backend RPC ausente: %s/usr/lib/libggml-rpc.so*\n' "$llama_destdir" >&2
-        exit 1
-    }
+    assert_no_host_only_libraries
+}
+
+# Confere o binario, nao a opcao: a auto-deteccao de RDMA depende do que estiver
+# instalado no host de build, e um NEEDED a mais so quebraria no boot da ISO.
+assert_no_host_only_libraries() {
+    local library
+    for library in "$llama_destdir"/usr/bin/libggml*.so \
+                   "$llama_destdir"/usr/lib/libggml*.so*; do
+        [[ -f "$library" ]] || continue
+        readelf -d "$library" | grep -q 'NEEDED.*libibverbs' && {
+            printf '%s depende de libibverbs, ausente na ISO; use -DGGML_RPC_RDMA=OFF\n' \
+                "$library" >&2
+            exit 1
+        }
+    done
+    return 0
 }
 
 install_llama_to_destdir() {
