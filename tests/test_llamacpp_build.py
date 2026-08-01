@@ -141,6 +141,39 @@ class LlamaStagingTest(unittest.TestCase):
         self.assertIn("    assert_no_host_only_libraries\n}", recipe)
         self.assertIn("    assert_llama_artifacts\n}", recipe)
 
+    def test_compiled_binaries_get_the_execute_bit_back(self):
+        """mkarchiso:316 copia airootfs sem preservar modo.
+
+        Sem declarar em file_permissions, ggml-rpc-server e llama-cli chegam
+        na imagem em 644: o build passa limpo e so falha rodando dentro da ISO.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            destdir = Path(scratch, "dest/usr/bin")
+            destdir.mkdir(parents=True)
+            for name in ("ggml-rpc-server", "llama-cli", "libggml-vulkan.so"):
+                (destdir / name).touch()
+            staged = Path(scratch, "staged")
+            staged.mkdir()
+            (staged / "profiledef.sh").write_text(
+                "declare -A file_permissions=()\n", encoding="utf-8")
+
+            generated = subprocess.run(
+                ["bash", "-c",
+                 f"set -euo pipefail\nrepo_root={ROOT}\nbuild_root={scratch}\n"
+                 f"source {LLAMA_LIB}\n"
+                 f"llama_destdir={scratch}/dest\nstaged_profile={staged}\n"
+                 "append_llama_file_permissions\n"
+                 f"source {staged}/profiledef.sh\n"
+                 'for key in "${!file_permissions[@]}"; do '
+                 'printf "%s=%s\\n" "$key" "${file_permissions[$key]}"; done'],
+                check=True, capture_output=True, text=True)
+
+        self.assertEqual(
+            sorted(generated.stdout.split()),
+            ["/usr/bin/ggml-rpc-server=0:0:755",
+             "/usr/bin/libggml-vulkan.so=0:0:755",
+             "/usr/bin/llama-cli=0:0:755"])
+
     def test_image_records_the_upstream_commit_on_disk(self):
         recipe = LLAMA_LIB.read_text(encoding="utf-8")
 

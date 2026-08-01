@@ -149,11 +149,35 @@ write_llama_build_info() {
     } > "$info"
 }
 
+# mkarchiso copia airootfs com "cp -af --no-preserve=ownership,mode"
+# (mkarchiso:316), entao o bit de execucao se perde e os binarios compilados
+# chegam na imagem em 644, como "Permission denied" -- o build passa limpo e a
+# falha so aparece rodando o comando dentro da ISO.
+#
+# A lista e gerada do que foi instalado, nao escrita a mao: o conjunto de
+# binarios do llama.cpp muda entre versoes do upstream.
+#
+# Cobre usr/bin inteiro, executaveis e plugins de backend juntos. Plugin so
+# precisa de leitura para o dlopen, e as libs em usr/lib ficam em 644 por isso
+# mesmo, mas separar os dois casos aqui exigiria classificar arquivo por
+# conteudo sem ganho nenhum.
+append_llama_file_permissions() {
+    local installed
+    {
+        printf '\nfile_permissions+=(\n'
+        for installed in "$llama_destdir"/usr/bin/*; do
+            printf '  ["/usr/bin/%s"]="0:0:755"\n' "${installed##*/}"
+        done
+        printf ')\n'
+    } >> "$staged_profile/profiledef.sh"
+}
+
 stage_variant_extras() {
     fetch_llama_source
     build_llama_binaries
     install_llama_to_destdir
     cp -a "$llama_destdir/." "$staged_profile/airootfs/"
+    append_llama_file_permissions
     write_llama_build_info
 }
 
