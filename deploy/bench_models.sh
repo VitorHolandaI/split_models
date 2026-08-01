@@ -27,10 +27,20 @@ models=(
     "ggml-org/gpt-oss-20b-GGUF:MXFP4"
 )
 
+# A ordem de -ts e RPC primeiro, local depois (src/llama.cpp:264 insere os
+# workers no inicio do vetor). Entao "10/90" carrega o dispositivo local e
+# "100/0" o remoto -- o inverso do que a saida de --list-devices sugere.
+#
+# Quatro pontos porque a curva importa mais que qualquer ponto isolado: dois
+# perto de uma ponta so mostrariam a inclinacao ali. 100/0 isola o pedagio da
+# rede, 10/90 mostra o custo de carregar o dispositivo lento, e os do meio
+# dizem se a queda e linear.
+ratios=("100/0" "90/10" "50/50" "10/90")
+
 usage() {
     printf 'uso: %s [saida.csv] [host:porta-do-worker]\n' "$0" >&2
     printf '  sem worker mede so esta maquina\n' >&2
-    printf '  com worker mede tambem o split, razoes 100/0 e 90/10\n' >&2
+    printf '  com worker mede tambem o split nas razoes %s\n' "${ratios[*]}" >&2
 }
 
 require_llama_bench() {
@@ -73,13 +83,14 @@ main() {
     printf 'modelo,configuracao,linha_llama_bench\n' >> "$output_csv"
     printf 'modelo,configuracao,status\n' >> "$output_csv.status"
 
+    local ratio
     for model in "${models[@]}"; do
         run_case "$model" "local" "$output_csv"
         [[ -n "$worker" ]] || continue
-        # 100/0 isola o custo da rede: nenhum trabalho local, so o pedagio de
-        # trazer os logits a cada token. 90/10 e a melhor razao medida ate agora.
-        run_case "$model" "rpc-100/0" "$output_csv" --rpc "$worker" -sm layer -ts 100/0
-        run_case "$model" "rpc-90/10" "$output_csv" --rpc "$worker" -sm layer -ts 90/10
+        for ratio in "${ratios[@]}"; do
+            run_case "$model" "rpc-$ratio" "$output_csv" \
+                --rpc "$worker" -sm layer -ts "$ratio"
+        done
     done
 
     printf '\nresultados em %s\n' "$output_csv" >&2

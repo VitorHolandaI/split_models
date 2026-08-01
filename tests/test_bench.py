@@ -61,6 +61,13 @@ class ModelBatteryScriptTest(unittest.TestCase):
         self.assertNotIn("set -euo pipefail", self.script)
         self.assertIn("nao coube ou falhou", self.script)
 
+    def test_ratios_span_both_ends_of_the_curve(self):
+        # Dois pontos perto de uma ponta so mostram a inclinacao ali. 100/0
+        # isola o pedagio da rede, 10/90 mostra o custo do dispositivo lento, e
+        # os do meio dizem se a queda entre eles e linear.
+        for ratio in ("100/0", "90/10", "50/50", "10/90"):
+            self.assertIn(f'"{ratio}"', self.script)
+
     def test_results_are_written_as_they_happen(self):
         # A bateria leva horas; uma queda no meio nao pode custar o que ja
         # terminou.
