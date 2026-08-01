@@ -18,21 +18,40 @@ from .master import DEFAULT_GGUF_REPO
 
 @dataclass(frozen=True)
 class GgufModel:
-    """One GGUF repository worth trying, with the reason it is listed."""
+    """One GGUF repository worth trying, with its download size and reason."""
 
     repo: str
+    quant: str
+    gigabytes: float
     note: str
 
+    @property
+    def needs_split(self) -> bool:
+        """Whether the weights alone leave no room on one 8 GB node.
 
-# Sizes chosen to bracket the fleet: one that fits anywhere, one that needs the
-# split to be worth running, and one that will not fit on a single 8 GB node.
+        The threshold is deliberately below 8: the OS, the RPC server and the
+        KV cache all take from the same budget.
+        """
+        return self.gigabytes > 6.0
+
+
+# Sizes read from the HuggingFace API on 2026-08-01, not estimated, and every
+# repository confirmed ungated -- these download with no account and no token.
+# The list brackets the fleet on purpose: models that fit one node, models that
+# barely do, and models that cannot, which is the whole argument for the split.
 KNOWN_MODELS = (
-    GgufModel(DEFAULT_GGUF_REPO, "padrao da appliance; cabe em qualquer no"),
-    GgufModel("Qwen/Qwen2.5-1.5B-Instruct-GGUF", "ainda cabe sozinho; util para comparar"),
-    GgufModel("Qwen/Qwen2.5-3B-Instruct-GGUF", "mesmo modelo dos benchmarks PyTorch"),
-    GgufModel("Qwen/Qwen2.5-7B-Instruct-GGUF", "exige o split; nao cabe em 8 GB sozinho"),
-    GgufModel("Qwen/Qwen3-4B-GGUF", "geracao mais nova, mesmo caminho de execucao"),
-    GgufModel("google/gemma-3-1b-it-qat-q4_0-gguf", "outra familia, para provar que nao e so Qwen"),
+    GgufModel(DEFAULT_GGUF_REPO, "q4_k_m", 0.49,
+              "padrao da appliance; o unico ja medido de ponta a ponta aqui"),
+    GgufModel("unsloth/Qwen3.5-4B-GGUF", "Q4_K_M", 2.74,
+              "geracao atual; cabe folgado em um no"),
+    GgufModel("ggml-org/gemma-4-E4B-it-GGUF", "Q4_0", 4.59,
+              "outra familia, conversao oficial do ggml; ainda cabe em um no"),
+    GgufModel("unsloth/Qwen3.5-9B-GGUF", "Q4_K_M", 5.68,
+              "no limite de 8 GB; e daqui que o split comeca a pagar"),
+    GgufModel("ggml-org/gpt-oss-20b-GGUF", "MXFP4", 12.11,
+              "exige dois nos; outro esquema de quantizacao"),
+    GgufModel("unsloth/Qwen3.6-27B-GGUF", "Q4_K_M", 16.82,
+              "exige tres nos ou mais; o caso que so o split resolve"),
 )
 
 
@@ -54,12 +73,17 @@ def _general_examples() -> list[str]:
 
 def _model_examples() -> list[str]:
     lines = ["", "MODELOS GGUF", "",
-             "Qualquer repositorio GGUF serve. Nome inexistente responde 401",
-             "'Invalid username or password', que parece erro de login e nao e.",
-             "Confira em huggingface.co antes de culpar a rede."]
+             "Qualquer repositorio GGUF serve; os abaixo foram conferidos e",
+             "baixam sem conta e sem token. Tamanho e do arquivo de fato, lido",
+             "da API em 2026-08-01.",
+             "",
+             "Nome de repositorio inexistente responde 401 'Invalid username or",
+             "password': parece erro de login e nao e. Confira o nome em",
+             "huggingface.co antes de culpar a rede."]
     for model in KNOWN_MODELS:
+        fits = "PRECISA DE MAIS DE UM NO" if model.needs_split else "cabe em um no"
         lines.extend([
-            f"\n{model.repo}",
+            f"\n{model.repo}  [{model.gigabytes:.2f} GB {model.quant}] {fits}",
             f"  {model.note}",
             f"  SPLIT_LLAMA_MODEL={model.repo} /root/split-llama-master.sh",
         ])
@@ -70,8 +94,9 @@ def _quant_examples() -> list[str]:
     return [
         "", "ESCOLHER A QUANTIZACAO",
         "  Sufixo :quant depois do repositorio. Menor quantizacao, menos RAM e",
-        "  menos banda de memoria por token, ao custo de qualidade.",
-        "    SPLIT_LLAMA_MODEL=Qwen/Qwen2.5-7B-Instruct-GGUF:q4_k_m \\",
+        "  menos banda de memoria por token, ao custo de qualidade. Como cada",
+        "  token rele todos os pesos, o tamanho do arquivo e o teto de tok/s.",
+        "    SPLIT_LLAMA_MODEL=unsloth/Qwen3.5-9B-GGUF:Q4_K_M \\",
         "      /root/split-llama-master.sh",
         "  Sem sufixo o llama.cpp escolhe sozinho.",
     ]

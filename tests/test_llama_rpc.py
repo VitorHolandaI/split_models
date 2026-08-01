@@ -7,7 +7,7 @@ from split_lm.llama_rpc.cli import _build_parser, format_workers, main as llama_
 from split_lm.llama_rpc.discovery import (
     PROTOCOL, RpcReplyError, RpcWorker, decode_reply, discover_workers,
     encode_reply, local_worker, rpc_endpoints, serve_discovery)
-from split_lm.llama_rpc.examples import KNOWN_MODELS, format_llama_examples
+from split_lm.llama_rpc.examples import GgufModel, KNOWN_MODELS, format_llama_examples
 from split_lm.llama_rpc.master import (
     DEFAULT_GGUF_REPO, list_devices_command, llama_cli_command)
 from split_lm.llama_rpc.process import (
@@ -199,10 +199,26 @@ class LlamaExampleTest(unittest.TestCase):
         repos = [model.repo for model in KNOWN_MODELS]
 
         self.assertIn(DEFAULT_GGUF_REPO, repos)
-        # Faixa proposital: um que cabe em qualquer no e um que nao cabe em 8 GB
-        # sozinho, senao a lista nao mostra por que o split existe.
-        self.assertIn("Qwen/Qwen2.5-7B-Instruct-GGUF", repos)
+        # Sem os dois lados a lista nao mostra por que o split existe.
+        self.assertTrue(any(model.needs_split for model in KNOWN_MODELS))
+        self.assertTrue(any(not model.needs_split for model in KNOWN_MODELS))
         self.assertGreater(len({repo.split("/")[0] for repo in repos}), 1)
+
+    def test_every_model_carries_a_measured_size(self):
+        for model in KNOWN_MODELS:
+            # Tamanho lido da API, nao estimado: e o numero que decide se cabe
+            # num no de 8 GB, entao chute aqui vira decisao errada la.
+            self.assertGreater(model.gigabytes, 0.0)
+            self.assertTrue(model.quant)
+
+    def test_split_threshold_leaves_room_for_the_rest_of_the_node(self):
+        # 8 GB e o total do host; o OS, o servidor RPC e o KV cache saem do
+        # mesmo orcamento, entao o corte fica abaixo disso.
+        borderline = GgufModel("x/y", "Q4_K_M", 6.5, "")
+        comfortable = GgufModel("x/y", "Q4_K_M", 5.0, "")
+
+        self.assertTrue(borderline.needs_split)
+        self.assertFalse(comfortable.needs_split)
 
     def test_examples_warn_about_the_misleading_401(self):
         rendered = format_llama_examples()
