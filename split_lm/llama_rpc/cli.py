@@ -19,8 +19,8 @@ import sys
 from collections.abc import Sequence
 
 from ..errors import ClusterError
-from .context_sweep import (
-    DEFAULT_CONTEXT_SIZES, format_sweep, run_context_sweep)
+from .bench import (
+    DEFAULT_DEPTHS, DEFAULT_RATIOS, bench_command, device_speed_command)
 from .examples import format_llama_examples
 from .discovery import (
     DISCOVERY_PORT, RPC_PORT, RpcWorker, discover_workers, local_worker,
@@ -103,18 +103,22 @@ def _build_parser() -> argparse.ArgumentParser:
     master.add_argument("llama_args", nargs="*",
                         help="argumentos extras repassados ao llama-cli")
 
-    sweep = commands.add_parser(
-        "contexto", help="mede o maior contexto que cada configuracao aguenta")
-    _add_shared_arguments(sweep)
-    sweep.add_argument("--model", required=True, help="caminho do arquivo GGUF")
-    sweep.add_argument("--rpc", default="",
+    bench = commands.add_parser(
+        "bench", help="varre proporcoes e contextos com llama-bench")
+    bench.add_argument("--model", required=True, help="caminho do arquivo GGUF")
+    bench.add_argument("--rpc", default="",
                        help="host:porta dos workers; vazio mede so esta maquina")
-    sweep.add_argument("--sizes", default=",".join(str(s) for s in DEFAULT_CONTEXT_SIZES),
-                       help="tamanhos de contexto separados por virgula")
-    sweep.add_argument("--timeout", type=float, default=900.0,
-                       help="segundos por ponto antes de considerar travado")
-    sweep.add_argument("--max-context", type=int, default=0,
-                       help="limite do modelo (n_ctx_train); 0 nao corta")
+    bench.add_argument("--ratios", default=",".join(DEFAULT_RATIOS),
+                       help="razoes -ts, dispositivos separados por barra")
+    bench.add_argument("--depths", default=",".join(str(d) for d in DEFAULT_DEPTHS),
+                       help="profundidades de contexto separadas por virgula")
+    bench.add_argument("--repetitions", type=int, default=3,
+                       help="repeticoes por ponto")
+
+    speed = commands.add_parser(
+        "velocidade", help="mede rapido esta maquina, para escolher o master")
+    speed.add_argument("--model", required=True, help="caminho do arquivo GGUF")
+    speed.add_argument("--rpc", default="", help="mede atraves de um worker")
     return parser
 
 
@@ -169,28 +173,37 @@ def run_examples(_options: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_sizes(specification: str) -> tuple[int, ...]:
+def _parse_depths(specification: str) -> tuple[int, ...]:
     try:
-        sizes = tuple(int(part) for part in specification.split(","))
+        depths = tuple(int(part) for part in specification.split(","))
     except ValueError as exc:
         raise ValueError(
-            f"sizes={specification!r}; esperado inteiros separados por virgula") from exc
-    if not sizes or min(sizes) <= 0:
-        raise ValueError(f"sizes={sizes}; esperado inteiros positivos")
-    return sizes
+            f"depths={specification!r}; esperado inteiros separados por virgula") from exc
+    if not depths or min(depths) < 0:
+        raise ValueError(f"depths={depths}; esperado inteiros nao negativos")
+    return depths
 
 
-def run_context(options: argparse.Namespace) -> int:
-    """Grow the context until it stops loading, and report where it stopped."""
-    results = run_context_sweep(options.model, options.rpc,
-                                _parse_sizes(options.sizes), options.timeout,
-                                options.max_context)
-    print(format_sweep(results))
-    return 0 if any(result.loaded for result in results) else 1
+def run_bench(options: argparse.Namespace) -> int:
+    """Sweep split ratios and context depths with llama-bench."""
+    command = bench_command(options.model, options.rpc,
+                            tuple(options.ratios.split(",")),
+                            _parse_depths(options.depths),
+                            repetitions=options.repetitions)
+    log.info("executando %s", " ".join(command))
+    return subprocess.run(command, check=False).returncode
+
+
+def run_speed(options: argparse.Namespace) -> int:
+    """Measure this machine quickly, to decide which node should be master."""
+    command = device_speed_command(options.model, options.rpc)
+    log.info("executando %s", " ".join(command))
+    return subprocess.run(command, check=False).returncode
 
 
 _COMMANDS = {"worker": run_worker, "nodes": run_nodes, "master": run_master,
-             "exemplos": run_examples, "contexto": run_context}
+             "exemplos": run_examples, "bench": run_bench,
+             "velocidade": run_speed}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
