@@ -134,7 +134,10 @@ def run_master(options: argparse.Namespace) -> int:
     # Devices first: it is the only cheap way to see that a worker contributed
     # its accelerator instead of silently falling back to CPU.
     subprocess.run(list_devices_command(endpoints), check=False)
-    command = llama_cli_command(options.hf, endpoints, options.llama_args)
+    # Sem terminal nao ha quem responda ao chat do llama-cli, e ele espera para
+    # sempre: um turno so e o unico modo que termina sozinho.
+    command = llama_cli_command(options.hf, endpoints, options.llama_args,
+                                interactive=sys.stdin.isatty())
     log.info("executando %s", " ".join(command))
     return subprocess.run(command, check=False).returncode
 

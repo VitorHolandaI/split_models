@@ -25,7 +25,8 @@ def list_devices_command(endpoints: str) -> list[str]:
 
 
 def llama_cli_command(model_repo: str, endpoints: str,
-                      extra_args: Sequence[str] = ()) -> list[str]:
+                      extra_args: Sequence[str] = (),
+                      interactive: bool = True) -> list[str]:
     """Build the master command, with layer splitting across the fleet.
 
     `--split-mode layer` gives each device a contiguous range of layers, which
@@ -37,9 +38,16 @@ def llama_cli_command(model_repo: str, endpoints: str,
     memory with the host, so a static ratio would be wrong on any machine but
     the one it was measured on.
 
+    `interactive` False adds `-st`, which runs one turn and exits. llama-cli
+    opens a chat UI by default, so a run with no terminal attached waits on
+    stdin forever -- measured spinning a core at 93% once RPC was involved.
+    The caller decides from whether it has a terminal, so the physical console
+    still gets a chat and a scripted or SSH run still terminates.
+
     Usage example:
         `command = llama_cli_command(DEFAULT_GGUF_REPO, "10.0.0.2:50052")`.
     """
+    single_turn = [] if interactive else ["-st"]
     return [LLAMA_CLI, "-hf", model_repo, "--rpc", endpoints,
             "--split-mode", "layer", "-ngl", "auto", "--fit", "on",
-            *extra_args]
+            *single_turn, *extra_args]

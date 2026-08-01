@@ -137,6 +137,17 @@ class MasterCommandTest(unittest.TestCase):
         # valeria na maquina onde foi medida.
         self.assertNotIn("--tensor-split", command)
 
+    def test_run_without_a_terminal_takes_one_turn_and_exits(self):
+        scripted = llama_cli_command(DEFAULT_GGUF_REPO, "10.0.0.2:50052",
+                                     interactive=False)
+        at_console = llama_cli_command(DEFAULT_GGUF_REPO, "10.0.0.2:50052",
+                                       interactive=True)
+
+        # llama-cli abre um chat por padrao e espera stdin para sempre quando
+        # nao ha terminal; medido girando um core a 93% com RPC no caminho.
+        self.assertIn("-st", scripted)
+        self.assertNotIn("-st", at_console)
+
     def test_extra_arguments_reach_llama_cli_unchanged(self):
         command = llama_cli_command(DEFAULT_GGUF_REPO, "10.0.0.2:50052",
                                     ["-p", "ola", "-n", "16"])
