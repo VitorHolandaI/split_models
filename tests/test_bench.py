@@ -41,6 +41,32 @@ class BenchCommandTest(unittest.TestCase):
         self.assertEqual(DEFAULT_DEPTHS[0], 0)
 
 
+class ModelBatteryScriptTest(unittest.TestCase):
+    def setUp(self):
+        from pathlib import Path
+        self.script = (Path(__file__).resolve().parents[1] / "deploy" /
+                       "bench_models.sh").read_text(encoding="utf-8")
+
+    def test_battery_covers_the_documented_model_list(self):
+        from split_lm.llama_rpc.examples import KNOWN_MODELS
+
+        # A lista do script tem que acompanhar a de examples.py, senao a
+        # bateria mede um conjunto e a ajuda ao operador anuncia outro.
+        for model in KNOWN_MODELS:
+            self.assertIn(model.repo, self.script)
+
+    def test_a_model_that_does_not_fit_is_recorded_not_fatal(self):
+        # Modelo grande demais faz o llama-bench sair com erro, e isso e
+        # resultado: "nao coube" e o dado que a bateria existe para produzir.
+        self.assertNotIn("set -euo pipefail", self.script)
+        self.assertIn("nao coube ou falhou", self.script)
+
+    def test_results_are_written_as_they_happen(self):
+        # A bateria leva horas; uma queda no meio nao pode custar o que ja
+        # terminou.
+        self.assertIn('>> "$output_csv"', self.script)
+
+
 class DeviceSpeedTest(unittest.TestCase):
     def test_ranking_run_is_short_enough_to_run_at_startup(self):
         quick = device_speed_command("modelo.gguf")
