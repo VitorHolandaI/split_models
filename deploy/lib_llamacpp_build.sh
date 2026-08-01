@@ -36,6 +36,11 @@ llama_destdir="$llama_cache/dest-$LLAMA_TAG"
 llama_cmake_options=(
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_INSTALL_PREFIX=/usr
+    # Sem isto o Debian/Ubuntu instala em usr/lib/x86_64-linux-gnu (multiarch) e
+    # o Arch em usr/lib. Duas consequencias, uma barulhenta e uma silenciosa: o
+    # LD_LIBRARY_PATH impresso no fim aponta para o lugar errado, e o glob de
+    # assert_no_host_only_libraries deixa de casar, checando nada.
+    -DCMAKE_INSTALL_LIBDIR=lib
     -DBUILD_SHARED_LIBS=ON
     -DGGML_BACKEND_DL=ON
     -DGGML_CPU=ON
@@ -142,17 +147,25 @@ assert_llama_artifacts() {
 # Confere o binario, nao a opcao: a auto-deteccao de RDMA depende do que estiver
 # instalado no host de build, e um NEEDED a mais so quebraria no boot da ISO.
 assert_no_host_only_libraries() {
-    local library
+    local library found=0
     for library in "$llama_destdir"/usr/bin/libggml*.so \
                    "$llama_destdir"/usr/lib/libggml*.so*; do
         [[ -f "$library" ]] || continue
+        found=1
         readelf -d "$library" | grep -q 'NEEDED.*libibverbs' && {
             printf '%s depende de libibverbs, ausente na ISO; use -DGGML_RPC_RDMA=OFF\n' \
                 "$library" >&2
             exit 1
         }
     done
-    return 0
+    # Um glob que nao casa nada percorre zero arquivos e "passa". Foi o que
+    # aconteceu no Ubuntu, onde as libs foram para usr/lib/x86_64-linux-gnu: a
+    # checagem de RDMA nao reprovou nada porque nao olhou nada.
+    (( found )) || {
+        printf 'nenhuma libggml encontrada em %s; layout de instalacao mudou\n' \
+            "$llama_destdir" >&2
+        exit 1
+    }
 }
 
 install_llama_to_destdir() {

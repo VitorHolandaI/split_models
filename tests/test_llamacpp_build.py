@@ -158,6 +158,22 @@ class LlamaStagingTest(unittest.TestCase):
         self.assertIn("usr/bin/libggml-rpc.so", recipe)
         self.assertIn("usr/bin/libggml-vulkan.so", recipe)
 
+    def test_install_layout_is_the_same_on_every_distribution(self):
+        options = run_llama_lib(
+            'printf "%s\\n" "${llama_cmake_options[@]}"').stdout.split()
+
+        # Debian/Ubuntu instala em usr/lib/x86_64-linux-gnu por padrao e o Arch
+        # em usr/lib. A divergencia quebra o LD_LIBRARY_PATH que o script
+        # imprime e, pior, faz o glob da checagem de linkagem casar nada.
+        self.assertIn("-DCMAKE_INSTALL_LIBDIR=lib", options)
+
+    def test_linkage_check_fails_when_it_finds_nothing_to_check(self):
+        recipe = LLAMA_LIB.read_text(encoding="utf-8")
+
+        # Glob sem correspondencia percorre zero arquivos e passa silenciosamente.
+        self.assertIn("found=0", recipe)
+        self.assertIn("(( found ))", recipe)
+
     def test_linkage_is_checked_on_the_artifact_not_only_on_the_flag(self):
         recipe = LLAMA_LIB.read_text(encoding="utf-8")
 
