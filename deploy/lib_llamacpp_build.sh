@@ -99,8 +99,24 @@ fetch_llama_source() {
     [[ -d "$llama_tree" ]] || tar xzf "$llama_tarball" -C "$llama_cache"
 }
 
+# CUDA e opcional e so para build local, nunca para a ISO. O backend CUDA usa
+# CMAKE_CUDA_ARCHITECTURES "native" por padrao (ggml/src/ggml-cuda/CMakeLists.txt),
+# entao o binario serve so a GPU que compilou -- inaceitavel numa imagem que roda
+# em maquinas diferentes, e o toolkit ainda dobraria o tamanho dela.
+#
+# Num worker RPC dedicado e outra historia: compila na propria maquina, para a
+# propria placa. Backends diferentes entre master e worker nao sao problema, o
+# RPC transporta tensores e nao instrucoes; o que precisa casar e o commit.
+llama_cuda_options() {
+    [[ "${SPLIT_LLAMA_CUDA:-0}" == "1" ]] || return 0
+    printf '%s\n' -DGGML_CUDA=ON
+}
+
 build_llama_binaries() {
-    cmake -B "$llama_tree/build" -S "$llama_tree" "${llama_cmake_options[@]}"
+    local extra=()
+    mapfile -t extra < <(llama_cuda_options)
+    cmake -B "$llama_tree/build" -S "$llama_tree" \
+        "${llama_cmake_options[@]}" ${extra[@]+"${extra[@]}"}
     cmake --build "$llama_tree/build" --config Release --parallel "$(nproc)"
 }
 
@@ -182,6 +198,17 @@ append_llama_file_permissions() {
         done
         printf ')\n'
     } >> "$staged_profile/profiledef.sh"
+}
+
+# A ISO roda em maquinas diferentes da que compilou; um build CUDA "native" so
+# serviria a placa do host de build, e o toolkit dobraria a imagem. Chamado pelo
+# script da variante antes de encenar nada: recusar depois do uv sync gastaria
+# minutos para so entao reclamar de uma variavel de ambiente.
+refuse_cuda_for_image() {
+    [[ "${SPLIT_LLAMA_CUDA:-0}" == "1" ]] || return 0
+    printf 'SPLIT_LLAMA_CUDA=1 nao vale para a ISO: o build CUDA e nativo da\n' >&2
+    printf 'GPU que compila. Use deploy/build_llamacpp_binaries.sh na maquina.\n' >&2
+    exit 1
 }
 
 stage_variant_extras() {

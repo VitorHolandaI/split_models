@@ -82,11 +82,38 @@ class LlamaBuildOptionsTest(unittest.TestCase):
         self.assertIn("libibverbs", recipe)
 
     def test_first_image_carries_no_vendor_sdk_backends(self):
-        recipe = LLAMA_LIB.read_text(encoding="utf-8")
-
-        for excluded in ("GGML_CUDA", "GGML_HIP", "GGML_SYCL", "GGML_CANN",
+        for excluded in ("-DGGML_CUDA=ON", "GGML_HIP", "GGML_SYCL", "GGML_CANN",
                          "GGML_MUSA", "GGML_METAL"):
-            self.assertNotIn(excluded, recipe)
+            self.assertNotIn(excluded, self.options)
+
+    def test_cuda_is_opt_in_and_off_by_default(self):
+        without = run_llama_lib('llama_cuda_options').stdout.strip()
+        with_cuda = run_llama_lib(
+            'SPLIT_LLAMA_CUDA=1\nllama_cuda_options').stdout.strip()
+
+        self.assertEqual(without, "")
+        self.assertEqual(with_cuda, "-DGGML_CUDA=ON")
+
+    def test_cuda_is_refused_for_the_iso_before_anything_is_staged(self):
+        variant = (ROOT / "deploy" / "build_llamacpp_archiso.sh").read_text(
+            encoding="utf-8")
+        guard = variant.index("refuse_cuda_for_image")
+        staging = variant.index("build_archiso_variant")
+
+        # O backend CUDA compila para a GPU do host de build; numa imagem que
+        # roda em outras maquinas isso nao serve. Checado depois, a recusa vinha
+        # so apos o uv sync, minutos gastos por causa de uma variavel.
+        self.assertLess(guard, staging)
+
+    def test_cuda_guard_actually_stops_the_image_build(self):
+        refused = subprocess.run(
+            ["bash", "-c",
+             f"set -euo pipefail\nrepo_root={ROOT}\nbuild_root=/tmp\n"
+             f"source {LLAMA_LIB}\nSPLIT_LLAMA_CUDA=1\nrefuse_cuda_for_image\n"],
+            check=False, capture_output=True, text=True)
+
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("nao vale para a ISO", refused.stderr)
 
 
 class LlamaStagingTest(unittest.TestCase):

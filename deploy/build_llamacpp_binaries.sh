@@ -17,7 +17,10 @@ source "$repo_root/deploy/lib_llamacpp_build.sh"
 
 usage() {
     printf 'uso: %s [prefixo-de-instalacao]\n' "$0" >&2
-    printf '  padrao: %s\n' "$llama_destdir" >&2
+    printf '  padrao: %s\n\n' "$llama_destdir" >&2
+    printf 'SPLIT_LLAMA_CUDA=1 acrescenta o backend CUDA, para maquinas NVIDIA\n' >&2
+    printf 'dedicadas. Exige o toolkit (nvcc) e compila para a GPU desta maquina.\n' >&2
+    printf 'Vulkan continua no build: e o fallback se a CUDA nao carregar.\n' >&2
 }
 
 print_next_steps() {

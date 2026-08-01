@@ -23,6 +23,7 @@ source "$repo_root/deploy/lib_llamacpp_build.sh"
 # Antes de encenar qualquer coisa: sem cmake ou headers Vulkan o build so
 # quebraria depois do uv sync, minutos adiante e longe da causa.
 require_llama_build_commands
+refuse_cuda_for_image
 
 profile_source="$repo_root/deploy/archiso"
 overlay_source="$repo_root/deploy/archiso-llamacpp-rpc"
