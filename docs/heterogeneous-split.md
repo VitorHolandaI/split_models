@@ -200,6 +200,29 @@ Uma razao derivada de velocidade medida, e nao de memoria, poderia fazer melhor.
 Mas o teto continua sendo a 3060 sozinha, entao o ganho maximo dessa otimizacao
 e chegar perto de nao ter dividido.
 
+## Backends: Vulkan Ganha Na Arc, CUDA Ganha Na NVIDIA
+
+A simetria esperada nao se confirmou. Na NVIDIA o backend nativo e mais rapido,
+na Intel integrada nao.
+
+`Qwen2.5-0.5B` Q4_K_M na iGPU Arc do Core Ultra 5 225H (Arrow Lake-P):
+
+| backend | prefill | decode |
+|---|---|---|
+| **Vulkan** (nosso build, b10216) | **1829.0 ± 8.8** | **65.2 ± 1.2** |
+| SYCL/oneAPI (pacote do sistema, b10103) | 799.1 ± 12.1 | 37.7 ± 2.9 |
+
+Vulkan ganha por 2.29x no prefill e 1.73x no decode. Os desvios sao pequenos,
+entao nao e ruido; as versoes diferem, mas nao o bastante para explicar o dobro.
+
+Logo **nao ha `SPLIT_LLAMA_SYCL`**: o oneAPI custaria tamanho e complexidade
+para render menos. A appliance ja usa Vulkan na Intel e AMD, e CUDA continua
+opcional so nas maquinas NVIDIA dedicadas, via
+`deploy/build_llamacpp_binaries.sh`.
+
+Provavel razao: o driver Mesa das iGPU recentes esta maduro, e o SYCL rende mais
+nas Arc dedicadas que nas integradas. Nao medido em Arc dedicada.
+
 ## O Master Deve Ser A Maquina Mais Rapida
 
 Medido com `--tensor-split 100,0` no 9B: com **zero** trabalho no iGPU, ainda
