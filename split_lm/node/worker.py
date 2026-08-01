@@ -1,7 +1,8 @@
 import logging, socket, time
 
 from ..io.network import _connect, _probe, _configure_connected_socket
-from ..io.protocol import _send, _recv, _send_msg, NetworkStats, SocketClosedError
+from ..io.framing import _send_msg, SocketClosedError
+from ..io.protocol import _send, _recv, NetworkStats
 from ..model.loader import _build
 from ..model.runner import _forward, _new_cache_state
 from .profiling import _stat_add, _stat_inc, _profile_report

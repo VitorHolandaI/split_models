@@ -1,6 +1,7 @@
 import logging, socket, threading, time
 
-from .protocol import _recv_msg, _send_msg, _recv
+from .framing import _recv_msg, _send_msg
+from .protocol import _recv
 
 log = logging.getLogger("split_lm")
 

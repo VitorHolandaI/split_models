@@ -1,5 +1,7 @@
-import json, math, socket, struct
+import math, struct
 import torch
+
+from .framing import SocketClosedError, _recvall
 
 
 _TENSOR_HEADER = struct.Struct("!2sBBBBI")
@@ -18,10 +20,6 @@ _DTYPE_TO_CODE = {
     torch.bool: 10,
 }
 _CODE_TO_DTYPE = {code: dtype for dtype, code in _DTYPE_TO_CODE.items()}
-
-
-class SocketClosedError(ConnectionError):
-    pass
 
 
 class NetworkStats:
@@ -46,20 +44,6 @@ class NetworkStats:
         self.received_bytes += payload_size
         self.min_received = payload_size if self.min_received is None else min(self.min_received, payload_size)
         self.max_received = max(self.max_received, payload_size)
-
-
-def _recvall(s, n):
-    result = bytearray(n)
-    view = memoryview(result)
-    received = 0
-    while received < n:
-        count = s.recv_into(view[received:], n - received)
-        if not count:
-            raise SocketClosedError(
-                f"socket fechou após {received} de {n} bytes; esperado frame completo"
-            )
-        received += count
-    return result
 
 
 def _record_sent(stats, payload_size):
@@ -111,13 +95,3 @@ def _recv(s, dev, stats=None):
     _record_received(stats, _TENSOR_HEADER.size + len(dimensions) + payload_size)
     tensor = torch.frombuffer(payload, dtype=dtype).reshape(shape)
     return tensor.to(dev), bool(flags)
-
-
-def _send_msg(s, msg):
-    d = json.dumps(msg).encode("utf-8")
-    s.sendall(struct.pack("!I", len(d))); s.sendall(d)
-
-
-def _recv_msg(s):
-    n, = struct.unpack("!I", _recvall(s, 4))
-    return json.loads(_recvall(s, n).decode("utf-8"))

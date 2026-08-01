@@ -41,6 +41,10 @@ Runtime paths are ephemeral:
 - `/run/split-models/benchmark-results`: JSONL, CSV, and SVG outputs;
 - `/run/split-models/tmp`: temporary files.
 
+The physical console on `tty1` logs in as root and opens `bpytop` while the
+worker continues in the detached tmux session. Press `q` to leave `bpytop` and
+use the shell. Serial consoles and SSH do not auto-launch the monitor.
+
 Inspect a running node:
 
 ```bash
@@ -87,3 +91,26 @@ persistent definitions before resetting the VM:
 virsh --connect qemu:///system change-media split-live-1 sda \
   /var/lib/libvirt/images/split-models-stateless.iso --insert --live --config
 ```
+
+## Casper-compatible loopback boot
+
+Some LCC deployments copy the ISO onto an existing filesystem and use an
+immutable GRUB entry written for Debian/Ubuntu. The build publishes real files
+at `/casper/vmlinuz` and `/casper/initrd`; common alternate initrd names are
+Rock Ridge symlinks to `/casper/initrd`.
+
+The `casper-compat` initramfs hook accepts `iso-scan/filename`, `fromiso`,
+`isofrom`, `findiso`, and the Archiso `img_loop` parameter. It mounts the
+underlying filesystem read-only, creates a loop device for the ISO, then passes
+that loop as `archisodevice` to the normal Archiso hook. Native USB BIOS/UEFI
+boot stays on the original Archiso path and does not invoke the shim.
+
+The shim can only see storage available in the initramfs. Encrypted filesystems,
+unsupported RAID/storage drivers, paths containing shell-breaking whitespace,
+and Secure Boot enforcement remain outside this compatibility layer. Validate
+the final image against the exact LCC GRUB entry before rollout.
+
+The compatibility path was validated with an external GRUB rescue image using
+exactly `boot=casper iso-scan/filename=/split-models.iso`. The booted guest
+mounted the outer filesystem, created `/dev/loop0` for the nested ISO, mounted
+that loop at `/run/archiso/bootmnt`, and then mounted the inner EROFS rootfs.

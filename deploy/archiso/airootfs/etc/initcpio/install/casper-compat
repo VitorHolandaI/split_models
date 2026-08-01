@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+build() {
+    add_module 'loop'
+    add_module 'iso9660'
+    for filesystem_module in ext4 btrfs xfs vfat exfat ntfs3; do
+        add_module "${filesystem_module}"
+    done
+    add_binary 'blkid'
+    add_binary 'losetup'
+    add_runscript
+}
+
+help() {
+    cat <<HELPEOF
+Traduz parametros de boot Casper (boot=casper, iso-scan/filename=...) para
+archisodevice, permitindo que um GRUB de terceiros
+preparado para ISOs Ubuntu/Debian inicie esta imagem. Precisa vir antes do hook
+'archiso' em HOOKS. Inerte quando a linha de comando ja traz archisolabel,
+archisodevice ou archisosearchuuid.
+HELPEOF
+}
+
+# vim: set ft=sh:

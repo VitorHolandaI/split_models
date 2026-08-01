@@ -1,0 +1,132 @@
+#!/usr/bin/ash
+# Casper compatibility shim.
+#
+# Some deployment tools (LCC) copy the ISO onto an existing disk and boot it
+# from a GRUB config we cannot edit. That config assumes an Ubuntu/Debian live
+# image, so it passes "boot=casper iso-scan/filename=/path/to.iso" instead of
+# an archiso device. This hook finds that file, creates a read-only loop device
+# and passes archisodevice=/dev/loopN to the archiso hook that runs after it.
+#
+# It stays inert on a native USB boot: those carry archisolabel,
+# archisodevice or archisosearchuuid on the command line.
+
+run_hook() {
+    [ -n "${archisolabel}${archisodevice}${archisosearchuuid}" ] && return 0
+
+    casper_load_storage_modules
+    casper_requested_iso="$(casper_iso_path_from_cmdline "$(cat /proc/cmdline)")"
+    [ -n "${casper_requested_iso}" ] || casper_requested_iso="${img_loop}"
+    casper_scan_devices "${casper_requested_iso}" || {
+        echo "casper-compat: ISO inacessivel (path='${casper_requested_iso}'); verifique path, filesystem e criptografia"
+        launch_interactive_shell
+    }
+
+    archisobasedir="${archisobasedir:-arch}"
+    printf 'archisodevice=%s\ncopytoram=n\n' "${archisodevice}" >> /tmp/cmdline
+    export archisobasedir archisodevice
+}
+
+casper_load_storage_modules() {
+    for casper_module in loop iso9660 ext4 btrfs xfs vfat exfat ntfs3; do
+        modprobe -q "${casper_module}"
+    done
+    udevadm settle --timeout=30 2>/dev/null
+}
+
+# Casper spells the ISO location "iso-scan/filename"; the slash keeps mkinitcpio
+# from exporting it as a shell variable, so parse /proc/cmdline directly.
+casper_iso_path_from_cmdline() {
+    for casper_token in $1; do
+        case "${casper_token}" in
+            iso-scan/filename=*)
+                printf '%s' "${casper_token#iso-scan/filename=}"
+                return 0
+                ;;
+            fromiso=*|isofrom=*|findiso=*)
+                printf '%s' "${casper_token#*=}"
+                return 0
+                ;;
+        esac
+    done
+}
+
+# Partitions show up late on USB and RAID controllers, so retry the sweep
+# instead of failing on the first pass.
+casper_scan_devices() {
+    casper_attempt=0
+    while [ "${casper_attempt}" -lt 15 ]; do
+        casper_probe_known_device "$1" && return 0
+        casper_probe_block_devices "$1" && return 0
+        casper_attempt=$((casper_attempt + 1))
+        sleep 1
+    done
+    return 1
+}
+
+casper_probe_known_device() {
+    [ -n "${img_dev}" ] || return 1
+    casper_resolved_device="$(resolve_device "${img_dev}")" || return 1
+    casper_mount_iso_loop "${casper_resolved_device}" "$1"
+}
+
+casper_probe_block_devices() {
+    for casper_device in $(blkid -o device); do
+        casper_mount_iso_loop "${casper_device}" "$1" && return 0
+    done
+    return 1
+}
+
+casper_mount_iso_loop() {
+    mkdir -p /run/casper-compat
+    umount /run/casper-compat 2>/dev/null || true
+    casper_filesystem="$(blkid -s TYPE -o value "$1")"
+    [ -n "${casper_filesystem}" ] || return 1
+    casper_mount_read_only "$1" "${casper_filesystem}" || return 1
+    casper_found="$(casper_iso_in_mount "$2")"
+    if [ -z "${casper_found}" ]; then
+        umount /run/casper-compat
+        return 1
+    fi
+    archisodevice="$(losetup --find --show --read-only "/run/casper-compat${casper_found}")"
+    [ -n "${archisodevice}" ] || return 1
+    echo "casper-compat: ${casper_found} em $1 -> ${archisodevice}"
+}
+
+casper_mount_options() {
+    case "$1" in
+        ext2|ext3|ext4) printf 'ro,noload' ;;
+        btrfs) printf 'ro,rescue=nologreplay' ;;
+        xfs) printf 'ro,norecovery' ;;
+        *) printf 'ro' ;;
+    esac
+}
+
+casper_mount_read_only() {
+    casper_mount_flags="$(casper_mount_options "$2")"
+    mount -o "${casper_mount_flags}" "$1" /run/casper-compat 2>/dev/null && return 0
+    [ "$2" = btrfs ] || return 1
+    mount -o ro,nologreplay "$1" /run/casper-compat 2>/dev/null
+}
+
+casper_iso_in_mount() {
+    [ -n "$1" ] && {
+        [ -f "/run/casper-compat$1" ] && printf '%s' "$1"
+        return 0
+    }
+    casper_search_split_models_iso
+}
+
+# Without iso-scan/filename we only know the image by name; the depth cap keeps
+# the sweep bounded on disks holding unrelated ISOs.
+casper_search_split_models_iso() {
+    for casper_candidate in \
+        /run/casper-compat/split-models-*.iso \
+        /run/casper-compat/*/split-models-*.iso \
+        /run/casper-compat/*/*/split-models-*.iso; do
+        [ -f "${casper_candidate}" ] || continue
+        printf '%s' "${casper_candidate#/run/casper-compat}"
+        return 0
+    done
+}
+
+# vim: set ft=sh:

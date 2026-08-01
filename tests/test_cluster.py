@@ -1,5 +1,7 @@
 import contextlib
 import io
+import subprocess
+import sys
 import threading
 import unittest
 
@@ -80,6 +82,15 @@ class DiscoveryReplyTest(unittest.TestCase):
 
 
 class NodeTableTest(unittest.TestCase):
+    def test_cluster_cli_import_does_not_load_torch(self):
+        check = subprocess.run(
+            [sys.executable, "-c", (
+                "import sys; import split_lm.cluster.cli; "
+                "print('torch' in sys.modules)")],
+            check=True, capture_output=True, text=True)
+
+        self.assertEqual(check.stdout.strip(), "False")
+
     def test_interactive_master_defaults_to_instruction_model(self):
         args = _build_parser().parse_args(["master", "--discover"])
 

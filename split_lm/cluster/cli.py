@@ -11,14 +11,10 @@ import sys
 import threading
 from collections.abc import Sequence
 
-from transformers import AutoConfig
-
 from ..benchmark_profiles import (
     RUNTIME_PRECISIONS, format_profiles, load_profile, load_profiles,
     profile_overrides)
 from ..constants import DEFAULT_CHAT_MODEL
-from ..context_benchmark import parse_context_sizes
-from ..model.loader import _check_supported_config, _ensure_precision_available
 from .control import serve_control
 from .discovery import DISCOVERY_PORT, discover_nodes, local_node, serve_discovery
 from .master import run_vertical_cluster
@@ -159,6 +155,10 @@ def _run_worker_agent(args: argparse.Namespace) -> None:
 
 
 def _run_master(args: argparse.Namespace) -> None:
+    from transformers import AutoConfig
+    from ..context_benchmark import parse_context_sizes
+    from ..model.loader import _check_supported_config, _ensure_precision_available
+
     if not args.discover:
         raise ValueError("master exige --discover; esperado discovery UDP dos workers")
     if args.benchmark_profile:

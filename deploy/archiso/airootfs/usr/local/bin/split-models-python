@@ -9,4 +9,5 @@ if [[ ! -x "$python_path" ]]; then
     printf 'ambiente ausente em %s; esperado .venv embutida na ISO\n' "$python_path" >&2
     exit 1
 fi
+cd /opt/split-models
 exec "$python_path" "$@"

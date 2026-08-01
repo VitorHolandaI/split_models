@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Protocol
 
-from ..io.protocol import _recv_msg, _send_msg
+from ..io.framing import _recv_msg, _send_msg
 from ..benchmark_profiles import RUNTIME_PRECISIONS
 
 

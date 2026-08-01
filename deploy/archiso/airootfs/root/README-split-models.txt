@@ -3,12 +3,14 @@ SPLIT MODELS - GUIA RAPIDO
 
 O worker inicia automaticamente no boot dentro da sessao tmux "split-models".
 Pressione Ctrl-C nessa sessao antes de promover o no a master.
+No console fisico, bpytop abre automaticamente. Pressione q para voltar ao shell.
 
 AJUDA COMPLETA
   split-cluster --help
   split-cluster worker --help
   split-cluster master --help
   split-lm --help
+  cat /opt/split-models/docs/protocol.md
 
 INICIAR MASTER (RECOMENDADO)
   /root/split-master.sh

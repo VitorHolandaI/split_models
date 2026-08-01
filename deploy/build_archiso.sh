@@ -19,7 +19,38 @@ copy_releng_link() {
     cp -a "$source_path" "$target_path"
 }
 
-for command_name in mkarchiso sudo trash uv; do
+# Bootloaders fora do nosso controle (LCC) esperam o layout Casper do Ubuntu:
+# /casper/vmlinuz e /casper/initrd. Publicamos esses caminhos na ISO; o hook
+# initcpio casper-compat cuida da outra metade, traduzindo iso-scan/filename.
+stage_casper_aliases() {
+    local source_iso="$1"
+    mkdir -p "$casper_stage/casper"
+    xorriso -osirrox on -indev "$source_iso" \
+        -extract /arch/boot/x86_64/vmlinuz-linux "$casper_stage/casper/vmlinuz" \
+        -extract /arch/boot/x86_64/initramfs-linux.img "$casper_stage/casper/initrd"
+    ln -s vmlinuz "$casper_stage/casper/vmlinuz.efi"
+    for initrd_alias in initrd.img initrd.lz initrd.gz; do
+        ln -s initrd "$casper_stage/casper/$initrd_alias"
+    done
+}
+
+# "-boot_image any replay" preserva El Torito, EFI e MBR isohibrido da imagem
+# original; sem isso o remaster deixa de dar boot nativo em USB.
+add_casper_aliases() {
+    local source_iso="$1"
+    casper_image="$casper_output_dir/$(basename -- "$source_iso")"
+    stage_casper_aliases "$source_iso"
+    xorriso -indev "$source_iso" -outdev "$casper_image" \
+        -boot_image any replay \
+        -follow off \
+        -map "$casper_stage/casper" /casper
+    [[ -f "$casper_image" ]] || {
+        printf 'remaster Casper falhou: %s\n' "$casper_image" >&2
+        exit 1
+    }
+}
+
+for command_name in mkarchiso sudo trash uv xorriso; do
     command -v "$command_name" >/dev/null || {
         printf 'comando ausente: %s\n' "$command_name" >&2
         exit 1
@@ -30,9 +61,13 @@ mkdir -p "$build_root" "$output_dir"
 staged_profile="$(mktemp -d "$build_root/archiso-profile.XXXXXX")"
 work_dir="$(mktemp -d "$build_root/archiso-work.XXXXXX")"
 build_output_dir="$(mktemp -d "$build_root/archiso-output.XXXXXX")"
+casper_stage="$(mktemp -d "$build_root/casper-stage.XXXXXX")"
+casper_output_dir="$(mktemp -d "$build_root/casper-output.XXXXXX")"
 
 cleanup() {
-    sudo /usr/bin/trash "$staged_profile" "$work_dir" "$build_output_dir"
+    sudo /usr/bin/trash \
+        "$staged_profile" "$work_dir" "$build_output_dir" \
+        "$casper_stage" "$casper_output_dir"
 }
 trap cleanup EXIT
 
@@ -46,6 +81,8 @@ cp -a \
     "$repo_root/split_lm" \
     "$repo_root/tools" \
     "$app_root/"
+mkdir -p "$app_root/docs"
+cp -a "$repo_root/docs/protocol.md" "$app_root/docs/"
 ln -s /run/split-models/benchmark-results "$app_root/benchmark-results"
 
 uv sync \
@@ -76,6 +113,9 @@ if (( ${#built_images[@]} != 1 )); then
         "${#built_images[@]}" "$build_output_dir" >&2
     exit 1
 fi
+
+add_casper_aliases "${built_images[0]}"
+built_images=("$casper_image")
 
 old_images=("$output_dir"/split-models-*.iso)
 if (( ${#old_images[@]} > 0 )); then
