@@ -1,0 +1,23 @@
+#!/usr/bin/bash
+set -u
+
+# Painel esquerdo da variante experimental: sobe o worker RPC e, quando ele
+# termina, deixa um shell no lugar em vez de fechar o painel -- e dali que o
+# operador promove o no a master.
+
+set -a
+source /etc/split-models.env
+set +a
+install -d -m 0755 /run/split-models/llama-cache
+uuid="$(< /proc/sys/kernel/random/uuid)"
+node_id="${SPLIT_NODE_ID:-node-${uuid%%-*}}"
+printf '%s\n' "$node_id" > /run/split-models/node-id
+printf 'worker\n' > /run/split-models/role
+cd /opt/split-models || exit 1
+split-llama worker --node-id "$node_id"
+status=$?
+printf 'shell\n' > /run/split-models/role
+printf '\nWorker RPC encerrado com status %d.\n' "$status"
+printf 'Master: /root/split-llama-master.sh\n'
+printf 'Comandos: cat /root/README-split-llama.txt\n'
+exec /usr/bin/bash

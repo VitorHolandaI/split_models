@@ -158,5 +158,52 @@ class OverlayMergeTest(unittest.TestCase):
                          ["split-models-llamacpp-rpc", "0:0:755"])
 
 
+class LlamaApplianceOverlayTest(unittest.TestCase):
+    def overlay_file(self, relative: str) -> str:
+        return (OVERLAY / "airootfs" / relative).read_text(encoding="utf-8")
+
+    def test_boot_starts_the_rpc_worker_not_the_pytorch_one(self):
+        service = self.overlay_file("etc/systemd/system/split-models.service")
+        session = self.overlay_file("usr/local/bin/split-llama-session")
+
+        # Mesmo nome de unidade da imagem estavel de proposito: reaproveita o
+        # link em multi-user.target.wants que lib_archiso_build.sh ja cria.
+        self.assertIn("ExecStart=/usr/local/bin/split-llama-tmux", service)
+        self.assertIn("split-llama worker", session)
+        self.assertNotIn("split-cluster worker", session)
+
+    def test_worker_panel_leaves_a_shell_instead_of_closing(self):
+        session = self.overlay_file("usr/local/bin/split-llama-session")
+
+        # Fechar o painel tiraria da tela o log que explica por que o worker
+        # morreu, que e a unica pista no console fisico.
+        self.assertIn("exec /usr/bin/bash", session)
+        self.assertIn("/root/split-llama-master.sh", session)
+
+    def test_insecure_transport_is_on_screen_not_only_in_the_docs(self):
+        layout = self.overlay_file("usr/local/bin/split-llama-tmux")
+        guide = self.overlay_file("root/README-split-llama.txt")
+
+        self.assertIn("EXPERIMENTAL RPC - LAN ISOLADA", layout)
+        self.assertIn("LAN isolada", guide)
+        self.assertIn("executa codigo", guide)
+
+    def test_master_shortcut_discovers_instead_of_hardcoding_addresses(self):
+        shortcut = self.overlay_file("root/split-llama-master.sh")
+
+        self.assertIn("split-llama master", shortcut)
+        self.assertIn("--discover", shortcut)
+        self.assertIn("detect_broadcast", shortcut)
+        self.assertNotIn("192.168.122.255", shortcut)
+
+    def test_variant_scripts_are_declared_executable(self):
+        appended = (OVERLAY / "profiledef.append.sh").read_text(encoding="utf-8")
+
+        for script in ("/root/split-llama-master.sh",
+                       "/usr/local/bin/split-llama-session",
+                       "/usr/local/bin/split-llama-tmux"):
+            self.assertIn(f'["{script}"]="0:0:755"', appended)
+
+
 if __name__ == "__main__":
     unittest.main()

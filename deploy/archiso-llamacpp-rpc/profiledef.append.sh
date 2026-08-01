@@ -6,6 +6,11 @@
 iso_name="split-models-llamacpp-rpc"
 iso_application="Split Models llama.cpp RPC appliance (experimental)"
 
-# file_permissions das entradas da variante entram junto com os scripts em
-# airootfs/. mkarchiso:324 so avisa quando o arquivo nao existe, e aviso
-# silencioso em build longo passa despercebido.
+# Os binarios compilados do llama.cpp recebem 755 por um bloco gerado em
+# deploy/lib_llamacpp_build.sh, a partir do que foi de fato instalado. Aqui so
+# entram os scripts versionados da variante.
+file_permissions+=(
+  ["/root/split-llama-master.sh"]="0:0:755"
+  ["/usr/local/bin/split-llama-session"]="0:0:755"
+  ["/usr/local/bin/split-llama-tmux"]="0:0:755"
+)
