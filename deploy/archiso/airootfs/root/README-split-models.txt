@@ -49,7 +49,28 @@ REDE
   ip -brief address
   ip route
 
-REINICIAR OU DESLIGAR
+ACESSO REMOTO (SSH)
+  Login root por chave. Senha esta desligada de proposito: a conta root tem
+  senha vazia, entao aceitar senha liberaria root a qualquer host da LAN.
+
+  Da estacao do operador, com a chave da appliance:
+    ssh -i split-models-appliance root@<ip-do-no>
+    ssh -i split-models-appliance root@<ip-do-no> poweroff
+
+  A imagem e stateless e regenera as chaves de host a cada boot, entao o ssh
+  reclama de host key trocada depois de todo reiniciar. Para a LAN dos nos,
+  em ~/.ssh/config da estacao:
+    Host 192.168.50.*
+      IdentityFile ~/.ssh/split-models-appliance
+      StrictHostKeyChecking no
+      UserKnownHostsFile /dev/null
+
+DESLIGAR A LAN INTEIRA
+  for ip in 192.168.50.11 192.168.50.12; do
+    ssh -i split-models-appliance root@$ip poweroff
+  done
+
+REINICIAR OU DESLIGAR (LOCAL)
   reboot
   poweroff
 

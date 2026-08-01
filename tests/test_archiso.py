@@ -128,6 +128,38 @@ class ArchisoInstallFlowTest(unittest.TestCase):
         self.assertIn("printf 'master", master_script)
         self.assertIn("/run/split-models/role", master_script)
 
+    def test_root_ssh_accepts_the_appliance_key_and_refuses_passwords(self):
+        ssh_dir = ARCHISO / "airootfs" / "etc" / "ssh" / "sshd_config.d"
+        authorized = (ARCHISO / "airootfs" / "root" / ".ssh" /
+                      "authorized_keys").read_text(encoding="utf-8")
+        profile = (ARCHISO / "profiledef.sh").read_text(encoding="utf-8")
+        configs = sorted(path.name for path in ssh_dir.glob("*.conf"))
+        settings = (ssh_dir / configs[0]).read_text(encoding="utf-8")
+
+        # sshd usa o primeiro valor obtido de cada palavra-chave, e o Include e
+        # a linha 2 do sshd_config: quem manda e o arquivo de menor prefixo.
+        self.assertEqual(configs[0], "10-archiso.conf")
+        self.assertIn("PermitRootLogin prohibit-password", settings)
+        self.assertIn("PasswordAuthentication no", settings)
+        self.assertIn("PubkeyAuthentication yes", settings)
+        self.assertRegex(authorized, r"(?m)^ssh-ed25519 \S+ split-models-appliance$")
+        # StrictModes descarta authorized_keys em silencio se a permissao
+        # estiver frouxa, e o login falha sem pista nenhuma.
+        self.assertIn('["/root/.ssh"]="0:0:700"', profile)
+        self.assertIn('["/root/.ssh/authorized_keys"]="0:0:600"', profile)
+
+    def test_appliance_private_key_stays_out_of_version_control(self):
+        ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        tracked = subprocess.run(
+            ["git", "ls-files", "deploy/keys"], cwd=ROOT,
+            check=True, capture_output=True, text=True)
+
+        self.assertIn("deploy/keys/*", ignored)
+        self.assertIn("!deploy/keys/*.pub", ignored)
+        # Commit de chave privada nao se desfaz: so se revoga trocando o par.
+        for path in tracked.stdout.split():
+            self.assertTrue(path.endswith(".pub"), f"chave privada versionada: {path}")
+
     def test_build_enables_archiso_network_services(self):
         build_lib = BUILD_LIB.read_text(encoding="utf-8")
 

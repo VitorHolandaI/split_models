@@ -7,3 +7,10 @@ __pycache__/
 build/
 dist/
 benchmark-results/
+
+# Chave privada da appliance. Fica no diretorio para ser entregue a mao, nunca
+# no historico: commit de chave privada nao se desfaz, so se revoga trocando o
+# par e reconstruindo a ISO. A publica correspondente vai versionada, embutida
+# em deploy/archiso/airootfs/root/.ssh/authorized_keys.
+deploy/keys/*
+!deploy/keys/*.pub
