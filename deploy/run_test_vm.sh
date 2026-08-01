@@ -2,25 +2,21 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=deploy/lib_iso_paths.sh
+source "$repo_root/deploy/lib_iso_paths.sh"
 
 usage() {
     printf 'uso: %s <1|2> [caminho-da-iso]\n' "$0" >&2
-}
-
-latest_iso() {
-    local candidates=("$repo_root"/dist/split-models-*.iso)
-    if [[ ! -e "${candidates[0]}" ]]; then
-        printf 'ISO ausente em %s/dist; execute ./deploy/build_archiso.sh\n' "$repo_root" >&2
-        exit 1
-    fi
-    printf '%s\n' "${candidates[${#candidates[@]} - 1]}"
 }
 
 main() {
     local node="${1:-}"
     [[ "$node" == "1" || "$node" == "2" ]] || { usage; exit 1; }
     [[ -e /dev/kvm ]] || { printf '/dev/kvm ausente; esperado KVM habilitado\n' >&2; exit 1; }
-    local iso_path="${2:-$(latest_iso)}"
+    # Sem o "|| exit", o antigo "exit 1" de latest_iso morria na subshell da
+    # substituicao de comando e o erro real virava "ISO invalida: ".
+    local iso_path="${2:-}"
+    [[ -n "$iso_path" ]] || iso_path="$(latest_iso "$repo_root")" || exit 1
     [[ -f "$iso_path" ]] || { printf 'ISO invalida: %s\n' "$iso_path" >&2; exit 1; }
 
     local ssh_port=$((2220 + node))
@@ -38,7 +34,7 @@ main() {
         -device "virtio-net-pci,netdev=wan,mac=52:54:00:76:0$node:01,addr=0x3" \
         -netdev "socket,id=lan,mcast=230.0.0.1:1234" \
         -device "virtio-net-pci,netdev=lan,mac=52:54:00:76:0$node:02,addr=0x4" \
-        -display none -serial mon:stdio
+        -display none -serial "${SPLIT_VM_SERIAL:-mon:stdio}"
 }
 
 main "$@"

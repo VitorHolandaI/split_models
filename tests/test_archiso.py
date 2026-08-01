@@ -163,11 +163,21 @@ class ArchisoInstallFlowTest(unittest.TestCase):
             check=True, capture_output=True, text=True)
         self.assertEqual(
             mount_options.stdout.splitlines(),
-            ["ro,noload", "ro,rescue=nologreplay", "ro,norecovery", "ro"])
+            ["x-initrd.mount,ro,noload",
+             "x-initrd.mount,ro,rescue=nologreplay",
+             "x-initrd.mount,ro,norecovery",
+             "x-initrd.mount,ro"])
         self.assertTrue(hook_install.is_file())
         self.assertIn("losetup --find --show --read-only", hook_script)
         self.assertIn("archisodevice=", hook_script)
         self.assertIn("ro,nologreplay", hook_script)
+        # The host partition must land where archiso_loop_mnt puts it, so the
+        # loop device survives switch_root and shutdown unmounts in order.
+        self.assertIn("/run/archiso/img_dev", hook_script)
+        self.assertNotIn("/run/casper-compat", hook_script)
+        # archiso re-reads archisodevice via getarg, which greps /tmp/cmdline;
+        # an exported variable would be clobbered. See hooks/archiso:229.
+        self.assertIn("/tmp/cmdline", hook_script)
         for filesystem in ("ext4", "btrfs", "xfs", "vfat", "exfat", "ntfs3"):
             self.assertIn(filesystem, hook_script)
             self.assertIn(filesystem, hook_install.read_text(encoding="utf-8"))
@@ -179,6 +189,38 @@ class ArchisoInstallFlowTest(unittest.TestCase):
         self.assertIn('casper_stage="$(mktemp -d', build_script)
         self.assertIn('casper_output_dir="$(mktemp -d', build_script)
         self.assertIn('built_images=("$casper_image")', build_script)
+
+    def test_casper_boot_harness_hosts_iso_on_ext4(self):
+        harness = ROOT / "deploy" / "run_casper_boot_test.sh"
+        harness_script = harness.read_text(encoding="utf-8")
+
+        self.assertTrue(harness.is_file())
+        self.assertTrue(os.access(harness, os.X_OK))
+        # ISO dentro de ISO faria o hospedeiro ser iso9660 e o teste passaria
+        # enquanto o cenario real (LCC copia para ext4/NTFS) falharia.
+        self.assertIn("mke2fs -q -t ext4", harness_script)
+        self.assertNotIn("mkarchiso", harness_script)
+        self.assertIn("lib_iso_paths.sh", harness_script)
+        self.assertIn(
+            "lib_iso_paths.sh",
+            (ROOT / "deploy" / "run_test_vm.sh").read_text(encoding="utf-8"))
+
+        boot_lines = subprocess.run(
+            ["bash", "-c", (
+                f"source {harness}; "
+                "iso_in_guest=/isos/split-models.iso; "
+                "for v in ext4 alias scan; do grub_boot_lines $v; done")],
+            check=True, capture_output=True, text=True)
+        emitted = [line.strip() for line in boot_lines.stdout.splitlines()]
+        self.assertEqual(emitted, [
+            "linux (loop)/casper/vmlinuz boot=casper "
+            "iso-scan/filename=/isos/split-models.iso console=ttyS0",
+            "initrd (loop)/casper/initrd",
+            "linux (loop)/casper/vmlinuz boot=casper "
+            "iso-scan/filename=/isos/split-models.iso console=ttyS0",
+            "initrd (loop)/casper/initrd.lz",
+            "linux (loop)/casper/vmlinuz boot=casper  console=ttyS0",
+            "initrd (loop)/casper/initrd"])
 
 
 if __name__ == "__main__":

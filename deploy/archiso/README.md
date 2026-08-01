@@ -41,9 +41,12 @@ Runtime paths are ephemeral:
 - `/run/split-models/benchmark-results`: JSONL, CSV, and SVG outputs;
 - `/run/split-models/tmp`: temporary files.
 
-The physical console on `tty1` logs in as root and opens `bpytop` while the
-worker continues in the detached tmux session. Press `q` to leave `bpytop` and
-use the shell. Serial consoles and SSH do not auto-launch the monitor.
+The physical console on `tty1` logs in as root and attaches the `split-models`
+tmux session. Its left 65% pane shows the worker and logs; the right 35% pane
+runs `bpytop`. Use `Ctrl-b` plus an arrow key to change panes. Pressing `q`
+leaves a shell in the monitor pane. Serial consoles and SSH do not auto-attach.
+The fixed tmux status line shows the current role, stable node ID, and local
+IPv4 address while logs and generated tokens scroll above it.
 
 Inspect a running node:
 
@@ -110,7 +113,20 @@ unsupported RAID/storage drivers, paths containing shell-breaking whitespace,
 and Secure Boot enforcement remain outside this compatibility layer. Validate
 the final image against the exact LCC GRUB entry before rollout.
 
-The compatibility path was validated with an external GRUB rescue image using
-exactly `boot=casper iso-scan/filename=/split-models.iso`. The booted guest
-mounted the outer filesystem, created `/dev/loop0` for the nested ISO, mounted
-that loop at `/run/archiso/bootmnt`, and then mounted the inner EROFS rootfs.
+`./deploy/run_casper_boot_test.sh [ext4|alias|scan]` reproduces the LCC path in
+QEMU without root: it stages the ISO onto an **ext4** disk built with
+`mke2fs -d`, then boots an external GRUB rescue image carrying the LCC menu
+entry. The host filesystem must be ext4, not another ISO — a nested ISO makes
+the host iso9660, which the shim has always been able to mount, so the test
+would pass while the real deployment failed.
+
+The three variants cover distinct failure modes: `ext4` is the full LCC entry,
+`alias` boots `/casper/initrd.lz` to prove GRUB resolves the Rock Ridge
+symlinks, and `scan` omits `iso-scan/filename` to exercise the filename sweep.
+
+Validated on 2026-08-01 against `split-models-2026.07.31-x86_64.iso`. All three
+variants logged `casper-compat: /isos/split-models-2026.07.31-x86_64.iso em
+/dev/vda -> /dev/loop0`, mounted that loop at `/run/archiso/bootmnt`, mounted
+the inner EROFS rootfs, and reached a login prompt with the worker session
+started. `./deploy/run_test_vm.sh 1` confirmed native boot still mounts
+`/dev/sr0` directly, leaving the shim inert.

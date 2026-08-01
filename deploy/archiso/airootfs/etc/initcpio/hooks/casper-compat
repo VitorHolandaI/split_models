@@ -21,9 +21,13 @@ run_hook() {
         launch_interactive_shell
     }
 
-    archisobasedir="${archisobasedir:-arch}"
+    # /tmp/cmdline is load-bearing, not cosmetic: this hook runs before the
+    # archiso hook, and archiso re-reads archisodevice and copytoram through
+    # getarg (init_functions:270-272 greps this file). An exported shell
+    # variable would be clobbered by that getarg, so the file is the only
+    # channel. Upstream archiso_loop_mnt can export instead because it runs
+    # inside the mount handler, after archiso's run_hook.
     printf 'archisodevice=%s\ncopytoram=n\n' "${archisodevice}" >> /tmp/cmdline
-    export archisobasedir archisodevice
 }
 
 casper_load_storage_modules() {
@@ -77,40 +81,44 @@ casper_probe_block_devices() {
 }
 
 casper_mount_iso_loop() {
-    mkdir -p /run/casper-compat
-    umount /run/casper-compat 2>/dev/null || true
+    mkdir -p /run/archiso/img_dev
+    umount /run/archiso/img_dev 2>/dev/null || true
     casper_filesystem="$(blkid -s TYPE -o value "$1")"
     [ -n "${casper_filesystem}" ] || return 1
     casper_mount_read_only "$1" "${casper_filesystem}" || return 1
     casper_found="$(casper_iso_in_mount "$2")"
     if [ -z "${casper_found}" ]; then
-        umount /run/casper-compat
+        umount /run/archiso/img_dev
         return 1
     fi
-    archisodevice="$(losetup --find --show --read-only "/run/casper-compat${casper_found}")"
+    archisodevice="$(losetup --find --show --read-only "/run/archiso/img_dev${casper_found}")"
     [ -n "${archisodevice}" ] || return 1
     echo "casper-compat: ${casper_found} em $1 -> ${archisodevice}"
 }
 
+# x-initrd.mount marks the mount as owned by the initramfs so systemd keeps it
+# alive past switch_root and unmounts it in the right order on shutdown. The
+# loop device backing archisodevice lives on this mount, so it must outlive the
+# initramfs. Same flag archiso uses in _mnt_dev (hooks/archiso:115).
 casper_mount_options() {
     case "$1" in
-        ext2|ext3|ext4) printf 'ro,noload' ;;
-        btrfs) printf 'ro,rescue=nologreplay' ;;
-        xfs) printf 'ro,norecovery' ;;
-        *) printf 'ro' ;;
+        ext2|ext3|ext4) printf 'x-initrd.mount,ro,noload' ;;
+        btrfs) printf 'x-initrd.mount,ro,rescue=nologreplay' ;;
+        xfs) printf 'x-initrd.mount,ro,norecovery' ;;
+        *) printf 'x-initrd.mount,ro' ;;
     esac
 }
 
 casper_mount_read_only() {
     casper_mount_flags="$(casper_mount_options "$2")"
-    mount -o "${casper_mount_flags}" "$1" /run/casper-compat 2>/dev/null && return 0
+    mount -o "${casper_mount_flags}" "$1" /run/archiso/img_dev 2>/dev/null && return 0
     [ "$2" = btrfs ] || return 1
-    mount -o ro,nologreplay "$1" /run/casper-compat 2>/dev/null
+    mount -o x-initrd.mount,ro,nologreplay "$1" /run/archiso/img_dev 2>/dev/null
 }
 
 casper_iso_in_mount() {
     [ -n "$1" ] && {
-        [ -f "/run/casper-compat$1" ] && printf '%s' "$1"
+        [ -f "/run/archiso/img_dev$1" ] && printf '%s' "$1"
         return 0
     }
     casper_search_split_models_iso
@@ -120,11 +128,11 @@ casper_iso_in_mount() {
 # the sweep bounded on disks holding unrelated ISOs.
 casper_search_split_models_iso() {
     for casper_candidate in \
-        /run/casper-compat/split-models-*.iso \
-        /run/casper-compat/*/split-models-*.iso \
-        /run/casper-compat/*/*/split-models-*.iso; do
+        /run/archiso/img_dev/split-models-*.iso \
+        /run/archiso/img_dev/*/split-models-*.iso \
+        /run/archiso/img_dev/*/*/split-models-*.iso; do
         [ -f "${casper_candidate}" ] || continue
-        printf '%s' "${casper_candidate#/run/casper-compat}"
+        printf '%s' "${casper_candidate#/run/archiso/img_dev}"
         return 0
     done
 }
