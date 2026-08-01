@@ -44,6 +44,12 @@ def rpc_server_command(bind_address: str, rpc_port: int = RPC_PORT) -> list[str]
     it finds and falls back to CPU on a host without Vulkan, which is what lets
     one image serve both kinds of machine.
 
+    That holds because the image carries one backend per card. A machine built
+    with CUDA as well lists the same GPU twice, once per backend, and serving
+    both makes the master add the two entries and believe it has double the
+    VRAM. Those hosts need `--device`, which is why the bare-metal build says so
+    rather than this appliance path.
+
     Usage example: `command = rpc_server_command("192.168.0.11")`.
     """
     return [RPC_SERVER, "--host", bind_address, "--port", str(rpc_port),

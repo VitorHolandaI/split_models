@@ -29,12 +29,18 @@ print_next_steps() {
     printf 'Para usar sem instalar no sistema:\n'
     printf '  export LD_LIBRARY_PATH=%s/usr/lib\n' "$prefix"
     printf '  export PATH=%s/usr/bin:$PATH\n\n' "$prefix"
-    printf 'Worker (a maquina que empresta GPU ou CPU):\n'
+    printf 'Confira os dispositivos antes de servir:\n'
+    printf '  llama-cli --list-devices\n\n'
+    printf 'Se a GPU nao aparecer, falta a ICD Vulkan: vulkan-intel,\n'
+    printf 'vulkan-radeon ou nvidia-utils.\n\n'
+    printf 'Se a MESMA placa aparecer duas vezes (CUDA0 e Vulkan0), sirva so uma:\n'
+    printf '  ggml-rpc-server --host 0.0.0.0 --port 50052 --device CUDA0\n\n'
+    printf 'Servir as duas faz o master somar a memoria das duas entradas e\n'
+    printf 'acreditar que ha o dobro de VRAM, atribuindo layers demais.\n\n'
+    printf 'Worker sem GPU duplicada:\n'
     printf '  ggml-rpc-server --host 0.0.0.0 --port 50052\n\n'
     printf 'Master (a maquina que roda a conversa):\n'
-    printf '  llama-cli --rpc <ip-do-worker>:50052 --list-devices\n\n'
-    printf 'Confira que a GPU aparece em --list-devices. Se nao aparecer, falta\n'
-    printf 'a ICD Vulkan: vulkan-intel, vulkan-radeon ou nvidia-utils.\n'
+    printf '  llama-cli --rpc <ip-do-worker>:50052 --list-devices\n'
 }
 
 main() {
