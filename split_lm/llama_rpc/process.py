@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import subprocess
 import threading
@@ -31,9 +32,13 @@ def lan_address(remote_address: str = "8.8.8.8") -> str:
         return str(probe.getsockname()[0])
 
 
-def rpc_server_command(bind_address: str, rpc_port: int = RPC_PORT,
-                       cache_dir: str = RPC_CACHE_DIR) -> list[str]:
+def rpc_server_command(bind_address: str, rpc_port: int = RPC_PORT) -> list[str]:
     """Build the ggml-rpc-server command line.
+
+    `--cache` is a boolean switch, not an option taking a path: the location
+    comes from the LLAMA_CACHE environment variable, read by
+    fs_get_cache_directory in tools/rpc/rpc-server.cpp. Passing a directory
+    after it makes the server refuse to start with "unknown argument".
 
     `--device` is deliberately absent: the server enumerates whatever backends
     it finds and falls back to CPU on a host without Vulkan, which is what lets
@@ -42,7 +47,15 @@ def rpc_server_command(bind_address: str, rpc_port: int = RPC_PORT,
     Usage example: `command = rpc_server_command("192.168.0.11")`.
     """
     return [RPC_SERVER, "--host", bind_address, "--port", str(rpc_port),
-            "--cache", cache_dir]
+            "--cache"]
+
+
+def rpc_server_environment(cache_dir: str = RPC_CACHE_DIR) -> dict[str, str]:
+    """Environment placing the RPC cache in RAM with the rest of the state.
+
+    Usage example: `environment = rpc_server_environment()`.
+    """
+    return {**os.environ, "LLAMA_CACHE": cache_dir}
 
 
 def _wait_for_port(address: str, port: int, timeout: float) -> bool:
@@ -69,11 +82,12 @@ def start_rpc_server(worker: RpcWorker, cache_dir: str = RPC_CACHE_DIR,
 
     Usage example: `server = start_rpc_server(local_worker("node-a"))`.
     """
-    command = rpc_server_command(worker.address, worker.rpc_port, cache_dir)
-    log.info("iniciando %s", " ".join(command))
+    command = rpc_server_command(worker.address, worker.rpc_port)
+    log.info("iniciando %s com LLAMA_CACHE=%s", " ".join(command), cache_dir)
     try:
         server = subprocess.Popen(command, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
+                                  stderr=subprocess.STDOUT, text=True,
+                                  env=rpc_server_environment(cache_dir))
     except OSError as exc:
         raise _rpc_failure(worker, "rpc_server.spawn", exc) from exc
     _assert_server_listening(worker, server, ready_timeout)

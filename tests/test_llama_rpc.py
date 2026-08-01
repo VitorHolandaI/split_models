@@ -11,7 +11,8 @@ from split_lm.llama_rpc.examples import GgufModel, KNOWN_MODELS, format_llama_ex
 from split_lm.llama_rpc.master import (
     DEFAULT_GGUF_REPO, list_devices_command, llama_cli_command)
 from split_lm.llama_rpc.process import (
-    assert_clean_exit, rpc_server_command, serve_until_server_exits)
+    assert_clean_exit, rpc_server_command, rpc_server_environment,
+    serve_until_server_exits)
 
 
 class FakeRpcServer:
@@ -109,11 +110,23 @@ class RpcEndpointTest(unittest.TestCase):
 
 
 class RpcServerCommandTest(unittest.TestCase):
-    def test_server_keeps_its_cache_in_ram_and_picks_its_own_devices(self):
+    def test_cache_switch_carries_no_path(self):
         command = rpc_server_command("192.168.0.11")
 
-        self.assertIn("--cache", command)
-        self.assertIn("/run/split-models/llama-cache", command)
+        # --cache e booleana; um caminho depois dela faz o servidor recusar com
+        # "unknown argument" e o worker morre no boot. O lugar vem do ambiente,
+        # lido por fs_get_cache_directory em tools/rpc/rpc-server.cpp.
+        self.assertEqual(command[-1], "--cache")
+        self.assertNotIn("/run/split-models/llama-cache", command)
+
+    def test_cache_lands_in_ram_with_the_rest_of_the_state(self):
+        environment = rpc_server_environment()
+
+        self.assertEqual(environment["LLAMA_CACHE"], "/run/split-models/llama-cache")
+
+    def test_server_picks_its_own_devices(self):
+        command = rpc_server_command("192.168.0.11")
+
         # Sem --device o servidor enumera o que achar e cai em CPU num host sem
         # Vulkan, que e o que permite uma imagem so servir os dois tipos de no.
         self.assertNotIn("--device", command)
