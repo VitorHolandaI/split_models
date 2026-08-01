@@ -1,0 +1,7 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+# O entry point split-llama do pyproject fica dentro do venv em
+# /opt/split-models/.venv/bin, que nao esta no PATH da sessao. Sem este wrapper
+# a sessao do worker morre com "command not found" e o painel cai em shell.
+exec /usr/local/bin/split-models-python -m split_lm.llama_rpc.cli "$@"

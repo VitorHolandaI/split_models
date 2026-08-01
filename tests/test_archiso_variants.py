@@ -196,6 +196,24 @@ class LlamaApplianceOverlayTest(unittest.TestCase):
         self.assertIn("detect_broadcast", shortcut)
         self.assertNotIn("192.168.122.255", shortcut)
 
+    def test_every_command_the_session_calls_exists_in_the_image(self):
+        """A ISO 1.0 subiu com "split-llama: command not found".
+
+        O entry point do pyproject fica no venv em /opt/split-models/.venv/bin,
+        que nao esta no PATH da sessao. Sem um wrapper em /usr/local/bin o
+        worker morre no boot com status 127 e o painel cai em shell.
+        """
+        wrappers = {path.name for path in
+                    (OVERLAY / "airootfs/usr/local/bin").iterdir()}
+        wrappers |= {path.name for path in
+                     (ROOT / "deploy/archiso/airootfs/usr/local/bin").iterdir()}
+
+        self.assertIn("split-llama", wrappers)
+        self.assertIn("split_lm.llama_rpc.cli",
+                      self.overlay_file("usr/local/bin/split-llama"))
+        self.assertIn("split-llama worker",
+                      self.overlay_file("usr/local/bin/split-llama-session"))
+
     def test_variant_scripts_are_declared_executable(self):
         appended = (OVERLAY / "profiledef.append.sh").read_text(encoding="utf-8")
 

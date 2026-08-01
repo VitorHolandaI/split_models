@@ -11,6 +11,7 @@ iso_application="Split Models llama.cpp RPC appliance (experimental)"
 # entram os scripts versionados da variante.
 file_permissions+=(
   ["/root/split-llama-master.sh"]="0:0:755"
+  ["/usr/local/bin/split-llama"]="0:0:755"
   ["/usr/local/bin/split-llama-session"]="0:0:755"
   ["/usr/local/bin/split-llama-tmux"]="0:0:755"
 )

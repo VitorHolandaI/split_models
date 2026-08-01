@@ -15,10 +15,17 @@ Painel direito: bpytop. Ctrl-b + setas alterna. Ctrl-C no painel do worker
 antes de promover o no a master.
 
 AJUDA COMPLETA
+  split-llama exemplos          comandos prontos, com modelos GGUF
   split-llama --help
   split-llama worker --help
   split-llama nodes --help
   split-llama master --help
+
+MODELOS
+  Qualquer repositorio GGUF serve, nao so os Qwen. `split-llama exemplos`
+  lista os que ja foram conferidos, com a razao de cada um. Nome de
+  repositorio inexistente responde 401 "Invalid username or password":
+  parece erro de login e nao e, confira o nome em huggingface.co.
 
 INICIAR MASTER (RECOMENDADO)
   /root/split-llama-master.sh

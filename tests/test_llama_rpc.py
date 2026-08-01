@@ -7,6 +7,7 @@ from split_lm.llama_rpc.cli import _build_parser, format_workers, main as llama_
 from split_lm.llama_rpc.discovery import (
     PROTOCOL, RpcReplyError, RpcWorker, decode_reply, discover_workers,
     encode_reply, local_worker, rpc_endpoints, serve_discovery)
+from split_lm.llama_rpc.examples import KNOWN_MODELS, format_llama_examples
 from split_lm.llama_rpc.master import (
     DEFAULT_GGUF_REPO, list_devices_command, llama_cli_command)
 from split_lm.llama_rpc.process import (
@@ -191,6 +192,35 @@ class RpcLifetimeTest(unittest.TestCase):
         worker = RpcWorker("node-a", "host-a", "10.0.0.2", 50052)
 
         assert_clean_exit(worker, FakeRpcServer(), 0)
+
+
+class LlamaExampleTest(unittest.TestCase):
+    def test_examples_cover_models_that_need_the_split_and_ones_that_do_not(self):
+        repos = [model.repo for model in KNOWN_MODELS]
+
+        self.assertIn(DEFAULT_GGUF_REPO, repos)
+        # Faixa proposital: um que cabe em qualquer no e um que nao cabe em 8 GB
+        # sozinho, senao a lista nao mostra por que o split existe.
+        self.assertIn("Qwen/Qwen2.5-7B-Instruct-GGUF", repos)
+        self.assertGreater(len({repo.split("/")[0] for repo in repos}), 1)
+
+    def test_examples_warn_about_the_misleading_401(self):
+        rendered = format_llama_examples()
+
+        # Repositorio inexistente responde 401 "Invalid username or password",
+        # que manda o operador procurar um problema de login inexistente.
+        self.assertIn("401", rendered)
+        self.assertIn("huggingface.co", rendered)
+
+    def test_examples_explain_when_the_run_is_interactive(self):
+        rendered = format_llama_examples()
+
+        self.assertIn("-st", rendered)
+        self.assertIn("/exit", rendered)
+
+    def test_examples_are_reachable_from_the_command_line(self):
+        self.assertEqual(llama_main(["exemplos"]), 0)
+        self.assertEqual(llama_main(["--comandos-exemplos"]), 0)
 
 
 class LlamaCliInterfaceTest(unittest.TestCase):

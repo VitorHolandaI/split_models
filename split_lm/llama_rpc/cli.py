@@ -19,6 +19,7 @@ import sys
 from collections.abc import Sequence
 
 from ..errors import ClusterError
+from .examples import format_llama_examples
 from .discovery import (
     DISCOVERY_PORT, RPC_PORT, RpcWorker, discover_workers, local_worker,
     rpc_endpoints)
@@ -61,8 +62,13 @@ def _add_shared_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="split-llama", description=f"llama.cpp distribuido por RPC. {_INSECURE}")
-    commands = parser.add_subparsers(dest="command", required=True)
+        prog="split-llama", description=f"llama.cpp distribuido por RPC. {_INSECURE}",
+        epilog="comandos prontos, com modelos GGUF: split-llama exemplos")
+    parser.add_argument("--comandos-exemplos", action="store_true",
+                        help="imprime comandos prontos e sai")
+    commands = parser.add_subparsers(dest="command", required=False)
+
+    commands.add_parser("exemplos", help="imprime comandos prontos com modelos GGUF")
 
     worker = commands.add_parser("worker", help="serve este no como worker RPC")
     _add_shared_arguments(worker)
@@ -142,7 +148,14 @@ def run_master(options: argparse.Namespace) -> int:
     return subprocess.run(command, check=False).returncode
 
 
-_COMMANDS = {"worker": run_worker, "nodes": run_nodes, "master": run_master}
+def run_examples(_options: argparse.Namespace) -> int:
+    """Print runnable commands and the GGUF repositories worth trying."""
+    print(format_llama_examples())
+    return 0
+
+
+_COMMANDS = {"worker": run_worker, "nodes": run_nodes, "master": run_master,
+             "exemplos": run_examples}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -150,7 +163,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     Usage example: `main(["nodes", "--broadcast", "192.168.0.255"])`.
     """
-    options = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    options = parser.parse_args(argv)
+    if options.comandos_exemplos:
+        return run_examples(options)
+    if options.command is None:
+        parser.print_help()
+        return 1
     try:
         return _COMMANDS[options.command](options)
     except ClusterError as error:
