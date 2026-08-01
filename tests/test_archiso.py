@@ -7,27 +7,29 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 ARCHISO = ROOT / "deploy" / "archiso"
+# O corpo do build vive na lib desde que a variante llamacpp-rpc passou a
+# compartilha-lo; build_archiso.sh so declara a configuracao da variante.
+BUILD_LIB = ROOT / "deploy" / "lib_archiso_build.sh"
 
 
 class ArchisoInstallFlowTest(unittest.TestCase):
     def test_build_creates_fresh_environment_without_copying_local_venv(self):
         packages = (ARCHISO / "packages.x86_64").read_text(encoding="utf-8").splitlines()
-        build_script = (ROOT / "deploy" / "build_archiso.sh").read_text(encoding="utf-8")
+        build_lib = BUILD_LIB.read_text(encoding="utf-8")
 
         self.assertIn("uv", packages)
-        self.assertIn("uv sync", build_script)
-        self.assertIn("--no-editable", build_script)
-        self.assertIn('"$repo_root/docs/protocol.md"', build_script)
-        self.assertNotIn('"$repo_root/.venv"', build_script)
+        self.assertIn("uv sync", build_lib)
+        self.assertIn("--no-editable", build_lib)
+        self.assertIn('"$repo_root/docs/protocol.md"', build_lib)
+        self.assertNotIn('"$repo_root/.venv"', build_lib)
 
     def test_build_replaces_iso_only_after_success(self):
-        build_script = (ROOT / "deploy" / "build_archiso.sh").read_text(
-            encoding="utf-8")
+        build_lib = BUILD_LIB.read_text(encoding="utf-8")
 
-        build = build_script.index("sudo mkarchiso")
-        discard_old = build_script.index('trash "${old_images[@]}"')
+        build = build_lib.index("sudo mkarchiso")
+        discard_old = build_lib.index("discard_old_images\n    mv")
         self.assertLess(build, discard_old)
-        self.assertIn('-o "$build_output_dir"', build_script)
+        self.assertIn('-o "$build_output_dir"', build_lib)
 
     def test_runtime_state_uses_ram(self):
         environment = (ARCHISO / "airootfs" / "etc" / "split-models.env").read_text(
@@ -127,14 +129,13 @@ class ArchisoInstallFlowTest(unittest.TestCase):
         self.assertIn("/run/split-models/role", master_script)
 
     def test_build_enables_archiso_network_services(self):
-        build_script = (ROOT / "deploy" / "build_archiso.sh").read_text(
-            encoding="utf-8")
+        build_lib = BUILD_LIB.read_text(encoding="utf-8")
 
-        self.assertIn("multi-user.target.wants/systemd-networkd.service", build_script)
-        self.assertIn("multi-user.target.wants/systemd-resolved.service", build_script)
-        self.assertIn("systemd-networkd-wait-online.service", build_script)
-        self.assertIn("sockets.target.wants/systemd-networkd.socket", build_script)
-        self.assertIn("copy_releng_link etc/resolv.conf", build_script)
+        self.assertIn("multi-user.target.wants/systemd-networkd.service", build_lib)
+        self.assertIn("multi-user.target.wants/systemd-resolved.service", build_lib)
+        self.assertIn("systemd-networkd-wait-online.service", build_lib)
+        self.assertIn("sockets.target.wants/systemd-networkd.socket", build_lib)
+        self.assertIn("copy_releng_link etc/resolv.conf", build_lib)
 
     def test_iso_accepts_casper_style_loopback_boot(self):
         hook = ARCHISO / "airootfs" / "etc" / "initcpio" / "hooks" / "casper-compat"
@@ -143,8 +144,7 @@ class ArchisoInstallFlowTest(unittest.TestCase):
         mkinitcpio = (ARCHISO / "airootfs" / "etc" / "mkinitcpio.conf.d" /
                       "archiso.conf").read_text(encoding="utf-8")
         profile = (ARCHISO / "profiledef.sh").read_text(encoding="utf-8")
-        build_script = (ROOT / "deploy" / "build_archiso.sh").read_text(
-            encoding="utf-8")
+        build_script = BUILD_LIB.read_text(encoding="utf-8")
         hook_script = hook.read_text(encoding="utf-8")
 
         parsed = subprocess.run(
@@ -188,7 +188,8 @@ class ArchisoInstallFlowTest(unittest.TestCase):
         self.assertIn("-boot_image any replay", build_script)
         self.assertIn('casper_stage="$(mktemp -d', build_script)
         self.assertIn('casper_output_dir="$(mktemp -d', build_script)
-        self.assertIn('built_images=("$casper_image")', build_script)
+        # A imagem publicada e a remasterizada, nunca a saida crua do mkarchiso.
+        self.assertIn('mv "$casper_image" "$output_dir/"', build_script)
 
     def test_casper_boot_harness_hosts_iso_on_ext4(self):
         harness = ROOT / "deploy" / "run_casper_boot_test.sh"
