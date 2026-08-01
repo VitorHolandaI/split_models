@@ -13,9 +13,19 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/deploy/lib_archiso_build.sh"
 
 variant_name="llamacpp-rpc"
+build_root="$repo_root/build/llamacpp-rpc"
+
+# Precisa vir depois da lib base: sobrescreve o stage_variant_extras sem-op dela
+# com a compilacao do llama.cpp. Depende de build_root, definido acima.
+# shellcheck source=deploy/lib_llamacpp_build.sh
+source "$repo_root/deploy/lib_llamacpp_build.sh"
+
+# Antes de encenar qualquer coisa: sem cmake ou headers Vulkan o build so
+# quebraria depois do uv sync, minutos adiante e longe da causa.
+require_llama_build_commands
+
 profile_source="$repo_root/deploy/archiso"
 overlay_source="$repo_root/deploy/archiso-llamacpp-rpc"
-build_root="$repo_root/build/llamacpp-rpc"
 output_dir="$repo_root/dist/llamacpp-rpc"
 iso_prefix="split-models-llamacpp-rpc"
 

@@ -126,6 +126,11 @@ stage_application() {
         --frozen --no-dev --no-editable
 }
 
+# Ponto de extensao da variante, chamado com o profile ja encenado e antes do
+# mkarchiso. Existe para variantes que injetam binarios proprios em airootfs em
+# vez de instalar por pacote. Sem-op no build estavel.
+stage_variant_extras() { :; }
+
 enable_worker_service() {
     local wants_dir="$staged_profile/airootfs/etc/systemd/system/multi-user.target.wants"
     mkdir -p "$wants_dir"
@@ -207,6 +212,7 @@ build_archiso_variant() {
     stage_profile
     assert_profile_iso_name
     stage_application
+    stage_variant_extras
     copy_releng_network_links
     enable_worker_service
     sudo mkarchiso -v -w "$work_dir" -o "$build_output_dir" "$staged_profile"
