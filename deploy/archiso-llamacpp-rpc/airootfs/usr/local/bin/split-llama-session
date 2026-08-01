@@ -7,8 +7,18 @@ set -u
 
 set -a
 source /etc/split-models.env
+# Sem LLAMA_CACHE o llama-cli baixa em /root/.cache/llama.cpp, que na live ISO
+# fica no overlay de escrita: um tmpfs de 256 MB (cow_spacesize padrao do
+# archiso). Ate o modelo de 0.49 GB estoura ali.
+LLAMA_CACHE=/run/split-models/llama-cache
 set +a
-install -d -m 0755 /run/split-models/llama-cache
+install -d -m 0755 "$LLAMA_CACHE"
+
+# tmpfs proprio e dimensionado: o master baixa o GGUF inteiro e o mmap dele vem
+# daqui, entao o arquivo ocupa RAM enquanto o modelo estiver carregado. O /run
+# padrao e metade da RAM, o que cortaria o modelo maximo pela metade sem motivo.
+mountpoint -q "$LLAMA_CACHE" ||
+    mount -t tmpfs -o size=75%,mode=0755 llama-cache "$LLAMA_CACHE"
 uuid="$(< /proc/sys/kernel/random/uuid)"
 node_id="${SPLIT_NODE_ID:-node-${uuid%%-*}}"
 printf '%s\n' "$node_id" > /run/split-models/node-id

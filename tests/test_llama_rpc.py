@@ -211,6 +211,16 @@ class LlamaExampleTest(unittest.TestCase):
             self.assertGreater(model.gigabytes, 0.0)
             self.assertTrue(model.quant)
 
+    def test_master_ram_caps_the_model_no_matter_how_many_nodes(self):
+        big = GgufModel("x/y", "Q4_K_M", 12.11, "")
+        medium = GgufModel("x/y", "Q8_0", 9.53, "")
+
+        # O master baixa o GGUF inteiro e da mmap; numa appliance stateless esse
+        # cache e tmpfs, entao o arquivo ocupa RAM do master enquanto carregado.
+        # Somar workers nao levanta esse teto.
+        self.assertFalse(big.fits_master(12.0))
+        self.assertTrue(medium.fits_master(12.0))
+
     def test_split_threshold_leaves_room_for_the_rest_of_the_node(self):
         # 8 GB e o total do host; o OS, o servidor RPC e o KV cache saem do
         # mesmo orcamento, entao o corte fica abaixo disso.

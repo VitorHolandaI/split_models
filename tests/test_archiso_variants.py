@@ -214,6 +214,19 @@ class LlamaApplianceOverlayTest(unittest.TestCase):
         self.assertIn("split-llama worker",
                       self.overlay_file("usr/local/bin/split-llama-session"))
 
+    def test_model_cache_lands_somewhere_a_model_actually_fits(self):
+        """O overlay de escrita da live ISO e um tmpfs de 256 MB.
+
+        Sem LLAMA_CACHE o llama-cli baixa em /root/.cache/llama.cpp, que fica
+        nesse overlay, e ate o modelo padrao de 0.49 GB estoura.
+        """
+        session = self.overlay_file("usr/local/bin/split-llama-session")
+
+        self.assertIn("LLAMA_CACHE=/run/split-models/llama-cache", session)
+        # /run padrao e metade da RAM, o que cortaria o modelo maximo pela
+        # metade sem motivo: o cache ganha tmpfs proprio e dimensionado.
+        self.assertIn("mount -t tmpfs -o size=75%", session)
+
     def test_variant_scripts_are_declared_executable(self):
         appended = (OVERLAY / "profiledef.append.sh").read_text(encoding="utf-8")
 

@@ -34,6 +34,22 @@ class GgufModel:
         """
         return self.gigabytes > 6.0
 
+    def fits_master(self, usable_gigabytes: float) -> bool:
+        """Whether the master can hold this file, which caps the whole fleet.
+
+        Splitting does not lift this. The master downloads the entire GGUF and
+        mmaps it, and on a stateless appliance that cache is tmpfs, so the file
+        sits in the master's RAM for as long as the model is loaded. Workers
+        receive only their layers over RPC and are never the binding limit.
+
+        Usage example: `model.fits_master(12.0)`.
+        """
+        return self.gigabytes <= usable_gigabytes - _MASTER_OVERHEAD_GB
+
+
+# KV cache, runtime do llama.cpp e o proprio sistema saem do mesmo orcamento.
+_MASTER_OVERHEAD_GB = 2.0
+
 
 # Sizes read from the HuggingFace API on 2026-08-01, not estimated, and every
 # repository confirmed ungated -- these download with no account and no token.
@@ -90,6 +106,20 @@ def _model_examples() -> list[str]:
     return lines
 
 
+def _master_limit_examples() -> list[str]:
+    return [
+        "", "O QUE LIMITA O MODELO MAXIMO",
+        "  O master baixa o GGUF inteiro e da mmap nele. A appliance e",
+        "  stateless, entao esse cache e tmpfs: o arquivo fica na RAM do master",
+        "  enquanto o modelo estiver carregado. Somar nos NAO levanta esse teto,",
+        "  porque os workers so recebem as layers deles pela rede.",
+        "",
+        "  teto do modelo = RAM utilizavel do master - 2 GB (KV cache, runtime, OS)",
+        "",
+        "  Num master com 12 GB utilizaveis, o maior arquivo e ~10 GB.",
+    ]
+
+
 def _quant_examples() -> list[str]:
     return [
         "", "ESCOLHER A QUANTIZACAO",
@@ -107,4 +137,5 @@ def format_llama_examples() -> str:
 
     Usage example: `print(format_llama_examples())`.
     """
-    return "\n".join([*_general_examples(), *_model_examples(), *_quant_examples()])
+    return "\n".join([*_general_examples(), *_model_examples(),
+                      *_master_limit_examples(), *_quant_examples()])
