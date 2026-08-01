@@ -100,9 +100,18 @@ stage_profile() {
 
 # Descasamento entre iso_prefix e o profiledef faria a limpeza de imagens
 # antigas usar um glob que nunca casa, acumulando ISOs em silencio.
+#
+# Lido com source, do mesmo jeito que o mkarchiso le. O overlay acrescenta um
+# segundo iso_name ao final do arquivo e e esse que vale; um grep casaria os dois
+# e compararia as duas linhas juntas contra o prefixo.
 assert_profile_iso_name() {
     local staged_name
-    staged_name="$(grep -oP '^iso_name="\K[^"]+' "$staged_profile/profiledef.sh")"
+    staged_name="$(
+        declare -A file_permissions=()
+        # shellcheck source=/dev/null
+        source "$staged_profile/profiledef.sh"
+        printf '%s' "$iso_name"
+    )"
     [[ "$staged_name" == "$iso_prefix" ]] || {
         printf 'iso_name do profile (%s) difere de iso_prefix (%s)\n' \
             "$staged_name" "$iso_prefix" >&2

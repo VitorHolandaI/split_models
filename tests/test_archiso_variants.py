@@ -117,6 +117,30 @@ class OverlayMergeTest(unittest.TestCase):
         self.assertIn("vulkan-icd-loader", merged.stdout)
         self.assertIn("vulkan-radeon", merged.stdout)
 
+    def test_iso_name_check_reads_the_override_not_both_assignments(self):
+        """Reproduz o profile encenado de verdade: base + overlay anexado.
+
+        O overlay deixa dois iso_name no arquivo e so o ultimo vale. Uma
+        checagem por grep casa os dois e compara as duas linhas contra o
+        prefixo, reprovando um profile correto.
+        """
+        base = (ROOT / "deploy" / "archiso" / "profiledef.sh").read_text(
+            encoding="utf-8")
+        overlay = (OVERLAY / "profiledef.append.sh").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as staged:
+            Path(staged, "profiledef.sh").write_text(base + overlay,
+                                                     encoding="utf-8")
+            checked = subprocess.run(
+                ["bash", "-c",
+                 f"set -euo pipefail\nsource {LIB}\n"
+                 f"staged_profile={staged}\n"
+                 "iso_prefix=split-models-llamacpp-rpc\n"
+                 "assert_profile_iso_name\necho ACEITO\n"],
+                check=False, capture_output=True, text=True)
+
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertIn("ACEITO", checked.stdout)
+
     def test_overlay_profiledef_renames_the_iso_without_losing_permissions(self):
         base = (ROOT / "deploy" / "archiso" / "profiledef.sh").read_text(
             encoding="utf-8")
