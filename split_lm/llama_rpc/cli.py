@@ -19,6 +19,8 @@ import sys
 from collections.abc import Sequence
 
 from ..errors import ClusterError
+from .context_sweep import (
+    DEFAULT_CONTEXT_SIZES, format_sweep, run_context_sweep)
 from .examples import format_llama_examples
 from .discovery import (
     DISCOVERY_PORT, RPC_PORT, RpcWorker, discover_workers, local_worker,
@@ -100,6 +102,19 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="lista host:porta explicita, quando nao usar --discover")
     master.add_argument("llama_args", nargs="*",
                         help="argumentos extras repassados ao llama-cli")
+
+    sweep = commands.add_parser(
+        "contexto", help="mede o maior contexto que cada configuracao aguenta")
+    _add_shared_arguments(sweep)
+    sweep.add_argument("--model", required=True, help="caminho do arquivo GGUF")
+    sweep.add_argument("--rpc", default="",
+                       help="host:porta dos workers; vazio mede so esta maquina")
+    sweep.add_argument("--sizes", default=",".join(str(s) for s in DEFAULT_CONTEXT_SIZES),
+                       help="tamanhos de contexto separados por virgula")
+    sweep.add_argument("--timeout", type=float, default=900.0,
+                       help="segundos por ponto antes de considerar travado")
+    sweep.add_argument("--max-context", type=int, default=0,
+                       help="limite do modelo (n_ctx_train); 0 nao corta")
     return parser
 
 
@@ -154,8 +169,28 @@ def run_examples(_options: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_sizes(specification: str) -> tuple[int, ...]:
+    try:
+        sizes = tuple(int(part) for part in specification.split(","))
+    except ValueError as exc:
+        raise ValueError(
+            f"sizes={specification!r}; esperado inteiros separados por virgula") from exc
+    if not sizes or min(sizes) <= 0:
+        raise ValueError(f"sizes={sizes}; esperado inteiros positivos")
+    return sizes
+
+
+def run_context(options: argparse.Namespace) -> int:
+    """Grow the context until it stops loading, and report where it stopped."""
+    results = run_context_sweep(options.model, options.rpc,
+                                _parse_sizes(options.sizes), options.timeout,
+                                options.max_context)
+    print(format_sweep(results))
+    return 0 if any(result.loaded for result in results) else 1
+
+
 _COMMANDS = {"worker": run_worker, "nodes": run_nodes, "master": run_master,
-             "exemplos": run_examples}
+             "exemplos": run_examples, "contexto": run_context}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

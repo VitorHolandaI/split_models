@@ -122,15 +122,47 @@ tirar o modelo de um armazenamento lento, nao de somar processadores.
 O caso 3 e o alvo original do projeto: varias maquinas CPU semelhantes numa
 LAN. O caso 1 e a armadilha, porque a frota parece maior e entrega menos.
 
+## A Ordem De --tensor-split Nao E A Do --list-devices
+
+Armadilha que custou varias medicoes. `--list-devices` imprime:
+
+```
+Vulkan0: Intel(R) Graphics (ARL)
+RPC0:    192.168.0.11:50052
+```
+
+Mas `src/llama.cpp:264` faz:
+
+```cpp
+model->devices.insert(model->devices.begin(), rpc_servers.begin(), rpc_servers.end());
+```
+
+Os workers RPC entram no **inicio** do vetor. A ordem que `--tensor-split` usa
+e portanto a inversa da impressa:
+
+```
+indice 0 = RPC0    (a maquina remota)
+indice 1 = Vulkan0 (o dispositivo local)
+```
+
+Entao `--tensor-split 10,90` da 10% ao remoto e 90% ao local -- o oposto do que
+a saida do `--list-devices` sugere. Confirme sempre no log de
+`llama_prepare_model_devices`, que lista na ordem real.
+
 ## tensor-split Nao Resolveu
 
-A ideia obvia e dar quase tudo ao dispositivo rapido. Duas tentativas com o
-27B, nenhuma melhor que a 3060 sozinha:
+A ideia obvia e dar quase tudo ao dispositivo rapido. Nenhuma tentativa com o
+27B ficou melhor que a 3060 sozinha:
 
-| razao | resultado |
-|---|---|
-| `--tensor-split 20,80` | falhou ao criar contexto: 80% de 13.59 GB mais o KV cache passa dos 11.4 GB da 3060 |
-| `--tensor-split 30,70` | nao terminou em 10 minutos |
+| razao | efeito real (RPC primeiro) | resultado |
+|---|---|---|
+| `20,80` | 20% na 3060, 80% no iGPU | falhou ao criar contexto |
+| `30,70` | 30% na 3060, 70% no iGPU | nao terminou em 10 minutos |
+| `10,90` | 10% na 3060, 90% no iGPU | mais lento ainda |
+
+As tres davam a maior parte ao dispositivo lento, o contrario da intencao. As
+medicoes valem como evidencia de que carregar o iGPU piora tudo, nao como teste
+da hipotese oposta -- essa ainda falta medir, com `90,10`.
 
 O espaco util e estreito por construcao. Dar pouco ao dispositivo lento nao
 adianta, porque toda layer nele custa em **todo** token; dar muito ao rapido
