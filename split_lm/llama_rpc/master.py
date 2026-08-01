@@ -1,0 +1,45 @@
+"""Build the llama-cli invocation that spans the discovered RPC workers."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+LLAMA_CLI = "llama-cli"
+# GGUF sibling of split_lm.constants.DEFAULT_CHAT_MODEL: llama.cpp cannot read
+# the safetensors the PyTorch path uses. Repository confirmed to exist; a wrong
+# name makes HuggingFace answer 401 "Invalid username or password", which reads
+# like an auth problem and is not one.
+DEFAULT_GGUF_REPO = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+
+
+def list_devices_command(endpoints: str) -> list[str]:
+    """Build the command that shows local and remote devices before inference.
+
+    Worth running first on a new fleet: it is the only cheap way to see that a
+    worker contributed the accelerator you expected instead of falling back to
+    its CPU.
+
+    Usage example: `command = list_devices_command("192.168.0.11:50052")`.
+    """
+    return [LLAMA_CLI, "--rpc", endpoints, "--list-devices"]
+
+
+def llama_cli_command(model_repo: str, endpoints: str,
+                      extra_args: Sequence[str] = ()) -> list[str]:
+    """Build the master command, with layer splitting across the fleet.
+
+    `--split-mode layer` gives each device a contiguous range of layers, which
+    is the mode that matches this project's pipeline split. `-ngl auto` and
+    `--fit on` let llama.cpp size the offload against the memory each device
+    actually reports, instead of a number guessed here.
+
+    `--tensor-split` is intentionally left unset. The target GPUs share system
+    memory with the host, so a static ratio would be wrong on any machine but
+    the one it was measured on.
+
+    Usage example:
+        `command = llama_cli_command(DEFAULT_GGUF_REPO, "10.0.0.2:50052")`.
+    """
+    return [LLAMA_CLI, "-hf", model_repo, "--rpc", endpoints,
+            "--split-mode", "layer", "-ngl", "auto", "--fit", "on",
+            *extra_args]

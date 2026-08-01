@@ -23,6 +23,7 @@ package = true
 [project.scripts]
 split-lm = "split_lm.cli:main"
 split-cluster = "split_lm.cluster.cli:main"
+split-llama = "split_lm.llama_rpc.cli:main"
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]

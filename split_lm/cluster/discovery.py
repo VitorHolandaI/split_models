@@ -7,8 +7,8 @@ import logging
 import os
 import socket
 import threading
-import time
 
+from ..io.udp import ReplyDecodeError, broadcast_probes, udp_socket
 from .plan import ClusterNode
 
 log = logging.getLogger("split_lm")
@@ -18,7 +18,7 @@ _PROBE = b"SPLIT_DISCOVER"
 _REPLY_FIELDS = ("node_id", "hostname", "control_port", "cpu_count", "available_memory")
 
 
-class DiscoveryReplyError(ValueError):
+class DiscoveryReplyError(ReplyDecodeError):
     """A node answered discovery with a payload this version cannot read."""
 
 
@@ -37,13 +37,6 @@ def local_node(node_id: str, control_port: int) -> ClusterNode:
     """
     return ClusterNode(node_id, socket.gethostname(), "", control_port,
                        os.cpu_count() or 1, _available_memory())
-
-
-def _udp_socket() -> socket.socket:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    return sock
 
 
 def encode_reply(node: ClusterNode) -> bytes:
@@ -83,7 +76,7 @@ def serve_discovery(node: ClusterNode, port: int = DISCOVERY_PORT,
     Usage example: `serve_discovery(local_node("node-a", 29510), stop=stop)`.
     """
     reply = encode_reply(node)
-    with _udp_socket() as sock:
+    with udp_socket() as sock:
         sock.bind(("", port))
         sock.settimeout(0.2)
         if ready is not None:
@@ -98,28 +91,6 @@ def serve_discovery(node: ClusterNode, port: int = DISCOVERY_PORT,
                 sock.sendto(reply, sender)
 
 
-def _collect_replies(sock: socket.socket, deadline: float) -> dict[str, ClusterNode]:
-    """Read replies until `deadline`, keeping one entry per node id."""
-    found: dict[str, ClusterNode] = {}
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return found
-        sock.settimeout(remaining)
-        try:
-            payload, sender = sock.recvfrom(4096)
-        except socket.timeout:
-            return found
-        # A malformed reply is one bad node, not a failed discovery: log the
-        # offending payload and keep listening for the healthy ones.
-        try:
-            node = decode_reply(payload, sender[0])
-        except DiscoveryReplyError as exc:
-            log.warning("%s", exc)
-            continue
-        found[node.node_id] = node
-
-
 def discover_nodes(port: int = DISCOVERY_PORT, timeout: float = 2.0,
                    broadcast_address: str = "255.255.255.255",
                    probes: int = 2) -> tuple[ClusterNode, ...]:
@@ -127,24 +98,6 @@ def discover_nodes(port: int = DISCOVERY_PORT, timeout: float = 2.0,
 
     Usage example: `nodes = discover_nodes(timeout=3.0)`.
     """
-    found: dict[str, ClusterNode] = {}
-    with _udp_socket() as sock:
-        sock.bind(("", 0))
-        deadline = time.monotonic() + timeout
-        for attempt in range(probes):
-            sock.sendto(_PROBE, (broadcast_address, port))
-            found.update(_collect_replies(sock, _probe_window(deadline, timeout,
-                                                              attempt, probes)))
-            if time.monotonic() >= deadline:
-                break
+    found = broadcast_probes(_PROBE, port, timeout, broadcast_address, probes,
+                             decode_reply, lambda node: node.node_id)
     return tuple(sorted(found.values(), key=lambda node: node.node_id))
-
-
-# Probes espalhados pela janela, nao em rajada. Enviados de uma vez, os N probes
-# saem no mesmo instante e um worker que ainda esta ligando a porta perde todos:
-# UDP para porta nao ligada e descartado sem fila, entao repetir nao adianta se
-# as repeticoes forem simultaneas.
-def _probe_window(deadline: float, timeout: float, attempt: int, probes: int) -> float:
-    if attempt == probes - 1:
-        return deadline
-    return min(deadline, time.monotonic() + timeout / probes)
