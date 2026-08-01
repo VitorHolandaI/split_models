@@ -59,15 +59,17 @@ KNOWN_MODELS = (
     GgufModel(DEFAULT_GGUF_REPO, "q4_k_m", 0.49,
               "padrao da appliance; o unico ja medido de ponta a ponta aqui"),
     GgufModel("unsloth/Qwen3.5-4B-GGUF", "Q4_K_M", 2.74,
-              "geracao atual; cabe folgado em um no"),
+              "geracao atual; cabe folgado em um no de 8 GB"),
     GgufModel("ggml-org/gemma-4-E4B-it-GGUF", "Q4_0", 4.59,
-              "outra familia, conversao oficial do ggml; ainda cabe em um no"),
-    GgufModel("unsloth/Qwen3.5-9B-GGUF", "Q4_K_M", 5.68,
-              "no limite de 8 GB; e daqui que o split comeca a pagar"),
+              "familia Gemma, conversao oficial do ggml; ainda cabe em 8 GB"),
+    GgufModel("unsloth/Qwen3.5-9B-GGUF", "Q6_K", 7.46,
+              "teto seguro num master de 12 GB; Q6 e indistinguivel do Q8"),
+    GgufModel("unsloth/Ornith-1.0-9B-GGUF", "Q6_K", 7.48,
+              "outra familia no mesmo teto, para comparar qualidade"),
+    GgufModel("unsloth/gemma-4-12b-it-GGUF", "Q5_K_M", 8.41,
+              "modelo maior no mesmo orcamento, trocando quantizacao por parametros"),
     GgufModel("ggml-org/gpt-oss-20b-GGUF", "MXFP4", 12.11,
-              "exige dois nos; outro esquema de quantizacao"),
-    GgufModel("unsloth/Qwen3.6-27B-GGUF", "Q4_K_M", 16.82,
-              "exige tres nos ou mais; o caso que so o split resolve"),
+              "passa de um master de 12 GB; serve para ver o limite estourar"),
 )
 
 
@@ -89,9 +91,10 @@ def _general_examples() -> list[str]:
 
 def _model_examples() -> list[str]:
     lines = ["", "MODELOS GGUF", "",
-             "Qualquer repositorio GGUF serve; os abaixo foram conferidos e",
-             "baixam sem conta e sem token. Tamanho e do arquivo de fato, lido",
-             "da API em 2026-08-01.",
+             "Qualquer repositorio GGUF serve, de qualquer familia: Qwen, Gemma,",
+             "Ornith, gpt-oss. Os abaixo foram conferidos e baixam sem conta e",
+             "sem token. Tamanho e do arquivo de fato, lido da API em 2026-08-01,",
+             "somando os shards quando o modelo vem partido.",
              "",
              "Nome de repositorio inexistente responde 401 'Invalid username or",
              "password': parece erro de login e nao e. Confira o nome em",
