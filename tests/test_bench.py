@@ -68,6 +68,15 @@ class ModelBatteryScriptTest(unittest.TestCase):
         for ratio in ("100/0", "90/10", "50/50", "10/90"):
             self.assertIn(f'"{ratio}"', self.script)
 
+    def test_moe_models_get_an_expert_offload_case(self):
+        # MoE le so os experts ativados por token, entao capacidade cobra os
+        # parametros totais e banda cobra so os ativos. --n-cpu-moe tira os
+        # experts da memoria rapida e pode fazer um modelo que nao cabe na VRAM
+        # passar a caber -- alternativa ao split, nao variacao dele.
+        self.assertIn("-ncmoe", self.script)
+        self.assertIn("gpt-oss-20b", self.script)
+        self.assertIn("is_moe", self.script)
+
     def test_results_are_written_as_they_happen(self):
         # A bateria leva horas; uma queda no meio nao pode custar o que ja
         # terminou.

@@ -37,6 +37,28 @@ models=(
 # dizem se a queda e linear.
 ratios=("100/0" "90/10" "50/50" "10/90")
 
+# Modelos MoE lem so os experts ativados por token, nao todos os pesos: o
+# "A3B"/"A4B" no nome de outros modelos e literalmente "active 3B". Entao
+# capacidade cobra os parametros TOTAIS e banda cobra so os ATIVOS.
+#
+# --n-cpu-moe tira os experts da memoria rapida e deixa la so a atencao, que e
+# pequena e usada em todo token. Num host de GPU dedicada isso faz um modelo que
+# nao cabe na VRAM passar a caber -- alternativa ao split, nao variacao dele.
+#
+# Nao ajuda em iGPU: o Vulkan reporta uma=1 nesta maquina, entao "CPU" e "GPU"
+# sao a mesma DRAM e mover experts nao muda a banda. Medir mesmo assim, para o
+# numero existir em vez de ser suposicao.
+moe_models=("ggml-org/gpt-oss-20b-GGUF:MXFP4")
+moe_cpu_layers=(99)
+
+is_moe() {
+    local candidate="$1" known
+    for known in "${moe_models[@]}"; do
+        [[ "$candidate" == "$known" ]] && return 0
+    done
+    return 1
+}
+
 usage() {
     printf 'uso: %s [saida.csv] [host:porta-do-worker]\n' "$0" >&2
     printf '  sem worker mede so esta maquina\n' >&2
@@ -83,9 +105,14 @@ main() {
     printf 'modelo,configuracao,linha_llama_bench\n' >> "$output_csv"
     printf 'modelo,configuracao,status\n' >> "$output_csv.status"
 
-    local ratio
+    local ratio layers
     for model in "${models[@]}"; do
         run_case "$model" "local" "$output_csv"
+        if is_moe "$model"; then
+            for layers in "${moe_cpu_layers[@]}"; do
+                run_case "$model" "local-cpumoe-$layers" "$output_csv" -ncmoe "$layers"
+            done
+        fi
         [[ -n "$worker" ]] || continue
         for ratio in "${ratios[@]}"; do
             run_case "$model" "rpc-$ratio" "$output_csv" \
