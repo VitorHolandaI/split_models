@@ -233,8 +233,8 @@ def _build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--profile", required=True,
                        choices=sorted(CAPACITY_PROFILES),
                        help="perfil fixo do bench-capacity")
-    bench.add_argument("--nodes", required=True,
-                       help="hosts SSH separados por virgula")
+    bench.add_argument("--nodes", default="",
+                       help="hosts SSH separados por virgula (ignorado com --auto-discover)")
     bench.add_argument("--master", default="",
                        help="host do master (obrigatorio no cenario distributed)")
     bench.add_argument("--parallel", type=int, default=4,
@@ -529,6 +529,9 @@ def _run_fleet_bench(coordinator: FleetCoordinator,
             return 1
         log.info("descobertos: %s", nodes)
     else:
+        if not options.nodes:
+            log.error("informe --nodes ou --auto-discover")
+            return 1
         nodes = _split_hosts(options.nodes)
     proxy: subprocess.Popen[bytes] | None = None
     if options.scenario == "distributed":
