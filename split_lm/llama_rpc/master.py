@@ -5,11 +5,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 LLAMA_CLI = "llama-cli"
-# GGUF sibling of split_lm.constants.DEFAULT_CHAT_MODEL: llama.cpp cannot read
-# the safetensors the PyTorch path uses. Repository confirmed to exist; a wrong
-# name makes HuggingFace answer 401 "Invalid username or password", which reads
-# like an auth problem and is not one.
-DEFAULT_GGUF_REPO = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+# Official smoke profile for the appliance. The quant suffix avoids upstream
+# selection changing when a repository adds another GGUF.
+DEFAULT_GGUF_REPO = "unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M"
 
 
 def list_devices_command(endpoints: str) -> list[str]:

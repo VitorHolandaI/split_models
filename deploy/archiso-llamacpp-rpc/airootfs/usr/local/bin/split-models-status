@@ -1,0 +1,7 @@
+#!/usr/bin/bash
+set -u
+
+# Sobrescreve o script da imagem estavel: o papel agora vem do estado gravado
+# pelo controlador de modos, nao mais dos arquivos soltos role/node-id que a
+# sessao tmux escrevia.
+exec /usr/local/bin/split-llama mode status --brief

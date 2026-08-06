@@ -163,22 +163,34 @@ class LlamaApplianceOverlayTest(unittest.TestCase):
         return (OVERLAY / "airootfs" / relative).read_text(encoding="utf-8")
 
     def test_boot_starts_the_rpc_worker_not_the_pytorch_one(self):
+        worker_unit = self.overlay_file(
+            "etc/systemd/system/split-llama-worker.service")
+        session = self.overlay_file("usr/local/bin/split-llama-session")
+
+        # O worker subiu de tmux para unidade supervisionada: Restart=on-failure
+        # e parada limpa, e o painel so observa o journal.
+        self.assertIn("ExecStart=/usr/local/bin/split-llama worker", worker_unit)
+        self.assertIn("Restart=on-failure", worker_unit)
+        self.assertNotIn("split-llama worker", session)
+        self.assertNotIn("split-cluster worker", session)
+
+    def test_tmux_panel_only_observes_the_supervised_units(self):
         service = self.overlay_file("etc/systemd/system/split-models.service")
         session = self.overlay_file("usr/local/bin/split-llama-session")
 
         # Mesmo nome de unidade da imagem estavel de proposito: reaproveita o
         # link em multi-user.target.wants que lib_archiso_build.sh ja cria.
         self.assertIn("ExecStart=/usr/local/bin/split-llama-tmux", service)
-        self.assertIn("split-llama worker", session)
-        self.assertNotIn("split-cluster worker", session)
+        self.assertIn("journalctl -fu split-llama-worker.service", session)
+        self.assertIn("split-llama-server.service", session)
 
     def test_worker_panel_leaves_a_shell_instead_of_closing(self):
         session = self.overlay_file("usr/local/bin/split-llama-session")
 
-        # Fechar o painel tiraria da tela o log que explica por que o worker
-        # morreu, que e a unica pista no console fisico.
+        # Fechar o painel tiraria da tela o log que explica por que uma
+        # unidade morreu, que e a unica pista no console fisico.
         self.assertIn("exec /usr/bin/bash", session)
-        self.assertIn("/root/split-llama-master.sh", session)
+        self.assertIn("split-llama mode", session)
 
     def test_insecure_transport_is_on_screen_not_only_in_the_docs(self):
         layout = self.overlay_file("usr/local/bin/split-llama-tmux")
@@ -211,29 +223,97 @@ class LlamaApplianceOverlayTest(unittest.TestCase):
         self.assertIn("split-llama", wrappers)
         self.assertIn("split_lm.llama_rpc.cli",
                       self.overlay_file("usr/local/bin/split-llama"))
-        self.assertIn("split-llama worker",
-                      self.overlay_file("usr/local/bin/split-llama-session"))
+        self.assertIn("split-llama worker", self.overlay_file(
+            "etc/systemd/system/split-llama-worker.service"))
+        self.assertIn("split-llama serve", self.overlay_file(
+            "etc/systemd/system/split-llama-server.service"))
+
+    def test_control_runtime_uses_system_python_without_ml_dependencies(self):
+        wrapper = self.overlay_file("usr/local/bin/split-llama")
+        packages = (OVERLAY / "packages.x86_64").read_text(encoding="utf-8")
+        llama_build = (ROOT / "deploy/lib_llamacpp_build.sh").read_text(
+            encoding="utf-8")
+
+        self.assertIn("cd /opt/split-models", wrapper)
+        self.assertIn("/usr/bin/python -m split_lm.llama_rpc.cli", wrapper)
+        self.assertNotIn("split-models-python", wrapper)
+        self.assertIn("stage_python_environment() { :; }", llama_build)
+        self.assertNotIn("nvidia-utils", packages)
 
     def test_model_cache_lands_somewhere_a_model_actually_fits(self):
         """O overlay de escrita da live ISO e um tmpfs de 256 MB.
 
-        Sem LLAMA_CACHE o llama-cli baixa em /root/.cache/llama.cpp, que fica
-        nesse overlay, e ate o modelo padrao de 0.49 GB estoura.
+        Sem LLAMA_CACHE o llama-server baixa em /root/.cache/llama.cpp, que
+        fica nesse overlay, e ate o modelo padrao de 0.49 GB estoura.
         """
-        session = self.overlay_file("usr/local/bin/split-llama-session")
+        server_unit = self.overlay_file(
+            "etc/systemd/system/split-llama-server.service")
+        cache_setup = self.overlay_file("usr/local/bin/split-llama-model-cache")
 
-        self.assertIn("LLAMA_CACHE=/run/split-models/llama-cache", session)
+        self.assertIn("LLAMA_CACHE=/run/split-models/model-cache", server_unit)
+        self.assertIn("split-llama-model-cache", server_unit)
         # /run padrao e metade da RAM, o que cortaria o modelo maximo pela
         # metade sem motivo: o cache ganha tmpfs proprio e dimensionado.
-        self.assertIn("mount -t tmpfs -o size=75%", session)
+        self.assertIn("mount -t tmpfs -o size=75%", cache_setup)
+
+    def test_caches_do_modelo_e_do_rpc_ficam_separados(self):
+        worker_unit = self.overlay_file(
+            "etc/systemd/system/split-llama-worker.service")
+        server_unit = self.overlay_file(
+            "etc/systemd/system/split-llama-server.service")
+
+        # Apagar o GGUF completo ao voltar a worker nao pode tocar nos
+        # tensors que o worker RPC recebeu.
+        self.assertIn("/run/split-models/rpc-cache", worker_unit)
+        self.assertIn("/run/split-models/model-cache", server_unit)
+        self.assertNotIn("model-cache", worker_unit)
 
     def test_variant_scripts_are_declared_executable(self):
         appended = (OVERLAY / "profiledef.append.sh").read_text(encoding="utf-8")
 
         for script in ("/root/split-llama-master.sh",
+                       "/usr/local/bin/split-llama-model-cache",
                        "/usr/local/bin/split-llama-session",
                        "/usr/local/bin/split-llama-tmux"):
             self.assertIn(f'["{script}"]="0:0:755"', appended)
+
+
+class SupervisedUnitsTest(unittest.TestCase):
+    """Fase 2: worker e servidor sob systemd; tmux so observa."""
+
+    def overlay_path(self, relative: str) -> Path:
+        return OVERLAY / "airootfs" / relative
+
+    def overlay_file(self, relative: str) -> str:
+        return self.overlay_path(relative).read_text(encoding="utf-8")
+
+    def test_worker_unit_is_enabled_at_boot_and_server_is_not(self):
+        wants = self.overlay_path(
+            "etc/systemd/system/multi-user.target.wants")
+
+        # Todo no inicia como ggml-rpc-server; o servidor so sobe quando
+        # `split-llama mode` grava o comando efetivo e inicia a unidade.
+        worker_link = wants / "split-llama-worker.service"
+        self.assertTrue(worker_link.is_symlink())
+        self.assertEqual(worker_link.readlink().name, "split-llama-worker.service")
+        self.assertFalse((wants / "split-llama-server.service").exists())
+
+    def test_server_unit_execs_the_recorded_effective_command(self):
+        server_unit = self.overlay_file(
+            "etc/systemd/system/split-llama-server.service")
+
+        # A unidade nao conhece modelo nem endpoints: le o comando efetivo
+        # gravado atomicamente pela transicao de modo.
+        self.assertIn("ExecStart=/usr/local/bin/split-llama serve", server_unit)
+        self.assertIn("Restart=on-failure", server_unit)
+        self.assertNotIn("--rpc", server_unit)
+
+    def test_status_bar_reads_the_mode_controller_state(self):
+        status = self.overlay_file("usr/local/bin/split-models-status")
+
+        # A barra do tmux deixou de ler os arquivos soltos role/node-id que a
+        # sessao escrevia; a fonte oficial e o estado do controlador.
+        self.assertIn("split-llama mode status --brief", status)
 
 
 if __name__ == "__main__":

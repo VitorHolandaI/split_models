@@ -158,6 +158,7 @@ class LlamaStagingTest(unittest.TestCase):
         recipe = LLAMA_LIB.read_text(encoding="utf-8")
 
         for binary in ("usr/bin/llama-cli", "usr/bin/llama-server",
+                       "usr/bin/llama-bench", "usr/bin/llama-batched-bench",
                        "usr/bin/ggml-rpc-server"):
             self.assertIn(binary, recipe)
         # Backend e plugin com GGML_BACKEND_DL e fica ao lado do executavel, em

@@ -1,0 +1,18 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+# Garante o model-cache em tmpfs proprio e dimensionado. Master e replica
+# baixam o GGUF inteiro para ca e o mmap vem daqui, entao o arquivo ocupa RAM
+# enquanto o modelo estiver carregado. Sem LLAMA_CACHE o download cairia em
+# /root/.cache/llama.cpp, no overlay de escrita da live ISO: um tmpfs de 256
+# MB (cow_spacesize padrao do archiso) onde ate o modelo pequeno estoura.
+# O /run padrao e metade da RAM, o que cortaria o modelo maximo pela metade
+# sem motivo: dai o tmpfs dedicado de 75%.
+#
+# Chamado pelo ExecStartPre da split-llama-server.service e pelo atalho
+# interativo /root/split-llama-master.sh, que nao passa pela unidade.
+
+cache=/run/split-models/model-cache
+install -d -m 0755 "$cache"
+mountpoint -q "$cache" || \
+    mount -t tmpfs -o size=75%,mode=0755 llama-model-cache "$cache"

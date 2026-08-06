@@ -81,6 +81,22 @@ The VM needs no writable disk:
 ./deploy/run_test_vm.sh 2
 ```
 
+Por padrao, SSH, RPC e HTTP ficam acessiveis somente pelo loopback do host. Para
+um teste hibrido com outra maquina na mesma LAN Wi-Fi, exponha uma VM pelo IPv4
+atual da interface gerenciada:
+
+```bash
+SPLIT_VM_WIFI_INTERFACE=wlan0 ./deploy/run_test_vm.sh 1 \
+  dist/llamacpp-rpc/split-models-llamacpp-rpc-2026.08.01-x86_64.iso
+```
+
+O no 1 usa as portas `2221` (SSH), `50051` (RPC) e `8081` (HTTP); o no 2 usa
+`2222`, `50052` e `8082`. O launcher recusa interfaces que nao sejam Wi-Fi
+`managed` ou que nao tenham exatamente um IPv4 global. Reinicie a VM se o DHCP
+trocar o IPv4 do host. RPC nao possui autenticacao nem criptografia: habilite
+essa exposicao somente em LAN isolada e confiavel. Firewall e isolamento de
+clientes do ponto de acesso ainda podem bloquear a conexao externa.
+
 With libvirt, create each VM using only `--cdrom` and the `default` NAT network.
 For this host, use 2 vCPUs and at least 4096 MiB per VM, and test inference with
 `Qwen/Qwen2.5-0.5B-Instruct`. A 3072 MiB VM was OOM-killed while holding the RAM-backed

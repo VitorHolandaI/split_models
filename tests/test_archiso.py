@@ -10,6 +10,17 @@ ARCHISO = ROOT / "deploy" / "archiso"
 # O corpo do build vive na lib desde que a variante llamacpp-rpc passou a
 # compartilha-lo; build_archiso.sh so declara a configuracao da variante.
 BUILD_LIB = ROOT / "deploy" / "lib_archiso_build.sh"
+VM_LAUNCHER = ROOT / "deploy" / "run_test_vm.sh"
+
+
+def run_vm_launcher_helper(script: str) -> subprocess.CompletedProcess[str]:
+    """Executa uma funcao do launcher sem iniciar QEMU.
+
+    Exemplo: ``run_vm_launcher_helper("resolve_vm_bind_address")``.
+    """
+    return subprocess.run(
+        ["bash", "-c", f"source {VM_LAUNCHER}\n{script}"],
+        check=False, capture_output=True, text=True)
 
 
 class ArchisoInstallFlowTest(unittest.TestCase):
@@ -53,11 +64,97 @@ class ArchisoInstallFlowTest(unittest.TestCase):
         self.assertFalse((system_dir / "split-models-install.service").exists())
 
     def test_vm_launcher_does_not_attach_persistent_storage(self):
-        launcher = (ROOT / "deploy" / "run_test_vm.sh").read_text(encoding="utf-8")
+        launcher = VM_LAUNCHER.read_text(encoding="utf-8")
 
         self.assertNotIn("SPLIT_DATA", launcher)
         self.assertNotIn("-drive", launcher)
         self.assertIn('SPLIT_VM_MEMORY_MB:-4096', launcher)
+
+
+class VmLanForwardingTest(unittest.TestCase):
+    def test_default_is_bound_to_loopback_only(self):
+        result = run_vm_launcher_helper(
+            "unset SPLIT_VM_WIFI_INTERFACE\nresolve_vm_bind_address")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "127.0.0.1")
+
+    def test_managed_wifi_resolves_its_single_global_ipv4(self):
+        result = run_vm_launcher_helper("""
+iw() { printf 'Interface wlan0\\n\\ttype managed\\n'; }
+ip() { printf '3: wlan0 inet 192.168.0.6/24 brd 192.168.0.255 scope global wlan0\\n'; }
+SPLIT_VM_WIFI_INTERFACE=wlan0 resolve_vm_bind_address
+""")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "192.168.0.6")
+
+    def test_non_managed_wifi_fails_closed(self):
+        result = run_vm_launcher_helper("""
+iw() { printf 'Interface wlan0\\n\\ttype AP\\n'; }
+ip() { printf '3: wlan0 inet 192.168.0.6/24 scope global wlan0\\n'; }
+SPLIT_VM_WIFI_INTERFACE=wlan0 resolve_vm_bind_address
+""")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("wlan0", result.stderr)
+        self.assertIn("managed", result.stderr)
+        self.assertIn("AP", result.stderr)
+
+    def test_missing_global_ipv4_fails_closed(self):
+        result = run_vm_launcher_helper("""
+iw() { printf 'Interface wlan0\\n\\ttype managed\\n'; }
+ip() { return 0; }
+SPLIT_VM_WIFI_INTERFACE=wlan0 resolve_vm_bind_address
+""")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("wlan0", result.stderr)
+        self.assertIn("exatamente um IPv4 global", result.stderr)
+
+    def test_multiple_global_ipv4_addresses_fail_closed(self):
+        result = run_vm_launcher_helper("""
+iw() { printf 'Interface wlan0\\n\\ttype managed\\n'; }
+ip() {
+    printf '3: wlan0 inet 192.168.0.6/24 scope global wlan0\\n'
+    printf '3: wlan0 inet 192.168.0.7/24 scope global secondary wlan0\\n'
+}
+SPLIT_VM_WIFI_INTERFACE=wlan0 resolve_vm_bind_address
+""")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("encontrei 2", result.stderr)
+
+    def test_forwarding_covers_ssh_rpc_and_http_without_wildcard(self):
+        result = run_vm_launcher_helper(
+            "vm_wan_netdev 2 192.168.0.6")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), (
+            "user,id=wan,hostfwd=tcp:192.168.0.6:2222-:22,"
+            "hostfwd=tcp:192.168.0.6:50052-:50052,"
+            "hostfwd=tcp:192.168.0.6:8082-:8080"))
+        self.assertNotIn("0.0.0.0", result.stdout)
+        self.assertNotIn("tcp::", result.stdout)
+
+    def test_lan_netdev_is_listen_on_node1_and_connect_on_node2(self):
+        # Regressao: a LAN era socket multicast (230.0.0.1), que depende da
+        # rota multicast do host e morria em silencio com VPN/ethernet no
+        # caminho. listen/connect por loopback nao depende de rota alguma.
+        node1 = run_vm_launcher_helper("vm_lan_netdev 1")
+        node2 = run_vm_launcher_helper("vm_lan_netdev 2")
+
+        self.assertEqual(node1.returncode, 0, node1.stderr)
+        self.assertEqual(node1.stdout.strip(), "socket,id=lan,listen=127.0.0.1:1234")
+        self.assertEqual(node2.returncode, 0, node2.stderr)
+        self.assertEqual(node2.stdout.strip(), "socket,id=lan,connect=127.0.0.1:1234")
+
+    def test_lan_netdev_honours_split_vm_lan_port(self):
+        result = run_vm_launcher_helper(
+            "SPLIT_VM_LAN_PORT=2345 vm_lan_netdev 2")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "socket,id=lan,connect=127.0.0.1:2345")
 
     def test_root_home_has_master_shortcut(self):
         shortcut = ARCHISO / "airootfs" / "root" / "split-master.sh"
@@ -101,6 +198,22 @@ class ArchisoInstallFlowTest(unittest.TestCase):
         monitor_script = monitor.read_text(encoding="utf-8")
         self.assertIn("bpytop", monitor_script)
         self.assertIn("exec /usr/bin/bash", monitor_script)
+
+    def test_serial_console_autologs_in_for_headless_vm(self):
+        # A VM do harness fala pelo serial-getty, nao pelo getty do tty1: sem
+        # este override a VM parava no prompt de login (regressao do boot de
+        # 2026-08-06). E o .bash_profile precisa aceitar ttyS0, senao mesmo
+        # logado o tmux nao anexa.
+        autologin = (ARCHISO / "airootfs" / "etc" / "systemd" / "system" /
+                     "serial-getty@ttyS0.service.d" / "autologin.conf")
+        profile = ARCHISO / "airootfs" / "root" / ".bash_profile"
+
+        content = autologin.read_text(encoding="utf-8")
+        self.assertIn("--autologin root", content)
+        self.assertIn("115200", content)
+        startup = profile.read_text(encoding="utf-8")
+        self.assertIn("/dev/ttyS0", startup)
+        self.assertIn("/dev/tty1", startup)
 
     def test_tmux_status_keeps_role_node_id_and_ip_visible(self):
         bin_dir = ARCHISO / "airootfs" / "usr" / "local" / "bin"

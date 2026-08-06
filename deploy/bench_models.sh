@@ -15,10 +15,10 @@ export LD_LIBRARY_PATH="$llama_prefix/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PAT
 llama_bench="$llama_prefix/usr/bin/llama-bench"
 
 # Mesma lista de split_lm/llama_rpc/examples.py, com a quantizacao que aquele
-# arquivo documenta. Cobre 0.49 GB a 12.11 GB e quatro familias de proposito:
+# arquivo documenta. Cobre 0.53 GB a 12.11 GB e quatro familias de proposito:
 # o interesse esta em onde cada maquina para de aguentar.
 models=(
-    "Qwen/Qwen2.5-0.5B-Instruct-GGUF:q4_k_m"
+    "unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M"
     "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
     "ggml-org/gemma-4-E4B-it-GGUF:Q4_0"
     "unsloth/Qwen3.5-9B-GGUF:Q6_K"

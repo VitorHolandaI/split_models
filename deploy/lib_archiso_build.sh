@@ -119,7 +119,7 @@ assert_profile_iso_name() {
     }
 }
 
-stage_application() {
+stage_application_source() {
     app_root="$staged_profile/airootfs/opt/split-models"
     mkdir -p "$app_root/docs"
     cp -a \
@@ -131,8 +131,16 @@ stage_application() {
         "$app_root/"
     cp -a "$repo_root/docs/protocol.md" "$app_root/docs/"
     ln -s /run/split-models/benchmark-results "$app_root/benchmark-results"
+}
+
+stage_python_environment() {
     uv sync --project "$app_root" --python /usr/bin/python \
         --frozen --no-dev --no-editable
+}
+
+stage_application() {
+    stage_application_source
+    stage_python_environment
 }
 
 # Ponto de extensao da variante, chamado com o profile ja encenado e antes do

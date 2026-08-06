@@ -10,9 +10,22 @@ Esta imagem e experimental e paralela a estavel. A estavel roda o split
 vertical em PyTorch com split-cluster; esta roda llama.cpp por RPC com
 split-llama. Sao motores diferentes e comandos diferentes.
 
-O tty1 anexa a sessao tmux "split-models". Painel esquerdo: worker RPC.
-Painel direito: bpytop. Ctrl-b + setas alterna. Ctrl-C no painel do worker
-antes de promover o no a master.
+O tty1 anexa a sessao tmux "split-models". Painel esquerdo: logs das unidades.
+Painel direito: bpytop. Ctrl-b + setas alterna. O painel esquerdo so segue os
+logs: worker e servidor sao supervisionados pelo systemd
+(split-llama-worker.service, split-llama-server.service), nao pelo tmux.
+
+PAPEIS (TROCA SEM REBOOT)
+  split-llama mode status
+  split-llama mode worker
+  split-llama mode idle
+  split-llama mode replica --model small --parallel 4
+  split-llama mode distributed-master --model large --parallel 8 \
+      --rpc <ip1>:50052,<ip2>:50052
+
+  O distributed-master exige --rpc explicito. A transicao tem lock, espera
+  GET /health e, em falha, limpa o estado e restaura o modo worker. O estado
+  oficial do papel fica em /run/split-models/state.json.
 
 AJUDA COMPLETA
   split-llama exemplos          comandos prontos, com modelos GGUF
@@ -20,6 +33,7 @@ AJUDA COMPLETA
   split-llama worker --help
   split-llama nodes --help
   split-llama master --help
+  split-llama mode --help
 
 MODELOS
   Qualquer repositorio GGUF serve, nao so os Qwen. `split-llama exemplos`
@@ -27,7 +41,7 @@ MODELOS
   repositorio inexistente responde 401 "Invalid username or password":
   parece erro de login e nao e, confira o nome em huggingface.co.
 
-INICIAR MASTER (RECOMENDADO)
+MASTER DE UM TURNO (ATALHO INTERATIVO, FORA DO CONTROLE DE MODOS)
   /root/split-llama-master.sh
 
 Sobrescrever os defaults:
@@ -41,9 +55,10 @@ DESCOBRIR WORKERS
   split-llama nodes
   split-llama nodes --broadcast <broadcast-da-LAN>
 
-INICIAR WORKER MANUALMENTE
-  split-llama worker
-  split-llama worker --bind 192.168.0.11 --rpc-port 50052
+UNIDADES SUPERVISIONADAS
+  systemctl status split-llama-worker.service
+  systemctl status split-llama-server.service
+  journalctl -fu split-llama-worker.service
 
 CONFERIR DISPOSITIVOS
   llama-cli --list-devices

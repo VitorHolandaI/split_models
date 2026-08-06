@@ -51,13 +51,13 @@ class GgufModel:
 _MASTER_OVERHEAD_GB = 2.0
 
 
-# Sizes read from the HuggingFace API on 2026-08-01, not estimated, and every
+# Sizes read from the HuggingFace API, not estimated, and every
 # repository confirmed ungated -- these download with no account and no token.
 # The list brackets the fleet on purpose: models that fit one node, models that
 # barely do, and models that cannot, which is the whole argument for the split.
 KNOWN_MODELS = (
-    GgufModel(DEFAULT_GGUF_REPO, "q4_k_m", 0.49,
-              "padrao da appliance; o unico ja medido de ponta a ponta aqui"),
+    GgufModel(DEFAULT_GGUF_REPO, "Q4_K_M", 0.53,
+              "perfil small oficial da appliance"),
     GgufModel("unsloth/Qwen3.5-4B-GGUF", "Q4_K_M", 2.74,
               "geracao atual; cabe folgado em um no de 8 GB"),
     GgufModel("ggml-org/gemma-4-E4B-it-GGUF", "Q4_0", 4.59,

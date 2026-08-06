@@ -122,7 +122,9 @@ class RpcServerCommandTest(unittest.TestCase):
     def test_cache_lands_in_ram_with_the_rest_of_the_state(self):
         environment = rpc_server_environment()
 
-        self.assertEqual(environment["LLAMA_CACHE"], "/run/split-models/llama-cache")
+        # Cache RPC separado do model-cache do master/replica: apagar o GGUF
+        # completo para devolver RAM nao pode tocar nos tensors do worker.
+        self.assertEqual(environment["LLAMA_CACHE"], "/run/split-models/rpc-cache")
 
     def test_server_picks_its_own_devices(self):
         command = rpc_server_command("192.168.0.11")
@@ -135,6 +137,11 @@ class RpcServerCommandTest(unittest.TestCase):
 
 
 class MasterCommandTest(unittest.TestCase):
+    def test_default_is_the_official_small_qwen35_profile(self):
+        self.assertEqual(
+            DEFAULT_GGUF_REPO,
+            "unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M")
+
     def test_master_splits_by_layer_and_sizes_the_offload_at_run_time(self):
         command = llama_cli_command(DEFAULT_GGUF_REPO, "10.0.0.2:50052")
 

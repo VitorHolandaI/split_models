@@ -14,9 +14,12 @@ from .discovery import RPC_PORT, RpcWorker, serve_discovery
 log = logging.getLogger("split_lm")
 
 RPC_SERVER = "ggml-rpc-server"
-# The model cache lives in RAM with the rest of the appliance state, so nothing
-# survives a reboot and no disk is ever written.
-RPC_CACHE_DIR = "/run/split-models/llama-cache"
+# The RPC cache lives in RAM with the rest of the appliance state, so nothing
+# survives a reboot and no disk is ever written. It is separate from the
+# master/replica model cache (model-cache): the worker only holds the tensors
+# it is handed over RPC, and wiping the full GGUF to give RAM back must never
+# touch this directory.
+RPC_CACHE_DIR = "/run/split-models/rpc-cache"
 
 
 def lan_address(remote_address: str = "8.8.8.8") -> str:

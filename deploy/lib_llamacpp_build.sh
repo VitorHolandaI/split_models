@@ -138,7 +138,8 @@ build_llama_binaries() {
 # usr/lib: e onde o ggml procura em tempo de execucao.
 assert_llama_artifacts() {
     local expected
-    for expected in usr/bin/llama-cli usr/bin/llama-server usr/bin/ggml-rpc-server \
+    for expected in usr/bin/llama-cli usr/bin/llama-server usr/bin/llama-bench \
+                    usr/bin/llama-batched-bench usr/bin/ggml-rpc-server \
                     usr/bin/libggml-rpc.so usr/bin/libggml-vulkan.so; do
         [[ -f "$llama_destdir/$expected" ]] || {
             printf 'artefato ausente apos install: %s\n' "$expected" >&2
@@ -240,6 +241,11 @@ refuse_cuda_for_image() {
     printf 'GPU que compila. Use deploy/build_llamacpp_binaries.sh na maquina.\n' >&2
     exit 1
 }
+
+# O controlador llama_rpc usa somente a stdlib. O fonte encenado fica no
+# sys.path ao executar Python a partir de /opt/split-models, entao instalar o
+# projeto puxaria Torch e Transformers sem necessidade para dentro da imagem.
+stage_python_environment() { :; }
 
 stage_variant_extras() {
     fetch_llama_source
