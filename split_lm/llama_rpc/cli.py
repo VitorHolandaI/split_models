@@ -222,6 +222,30 @@ def _build_parser() -> argparse.ArgumentParser:
     reset.add_argument("--nodes", required=True,
                        help="hosts SSH separados por virgula")
 
+    bench = fleet_sub.add_parser(
+        "bench", help="inventario + promocao + HAProxy + bench-capacity em um comando")
+    bench.add_argument("--scenario", required=True,
+                       choices=("distributed", "replicated"),
+                       help="topologia do benchmark")
+    bench.add_argument("--model", required=True,
+                       choices=sorted(MODEL_PROFILES),
+                       help="perfil oficial do GGUF")
+    bench.add_argument("--profile", required=True,
+                       choices=sorted(CAPACITY_PROFILES),
+                       help="perfil fixo do bench-capacity")
+    bench.add_argument("--nodes", required=True,
+                       help="hosts SSH separados por virgula")
+    bench.add_argument("--master", default="",
+                       help="host do master (obrigatorio no cenario distributed)")
+    bench.add_argument("--parallel", type=int, default=4,
+                       help="slots/sequencias vivas do llama-server")
+    bench.add_argument("--port", type=int, default=8080,
+                       help="porta HTTP dos servidores inferencia")
+    bench.add_argument("--output-dir", type=Path, default=Path("benchmark-results"),
+                       help="onde gravar requests.jsonl e summary.csv")
+    bench.add_argument("--health-timeout", type=float, default=900.0,
+                       help="segundos esperando GET /health")
+
     bench_capacity = commands.add_parser(
         "bench-capacity",
         help="executa um perfil de capacidade contra llama-server(s)")
@@ -471,6 +495,8 @@ def run_fleet(options: argparse.Namespace) -> int:
             print(f"replicas prontas; inventario: {result.inventory_path}")
             print(f"haproxy: {result.haproxy_path}")
             return 0
+        if options.fleet_command == "bench":
+            return _run_fleet_bench(coordinator, options)
         result = coordinator.reset(_split_hosts(options.nodes))
         print("nos em modo worker")
         print(f"registro: {result}")
@@ -479,6 +505,55 @@ def run_fleet(options: argparse.Namespace) -> int:
             OSError, ValueError) as error:
         log.error("%s", error)
         return 1
+
+
+def _run_fleet_bench(coordinator: FleetCoordinator,
+                     options: argparse.Namespace) -> int:
+    """Inventory -> promote -> HAProxy -> bench-capacity -> cleanup."""
+    from .health import HttpHealthProbe, wait_until
+
+    nodes = _split_hosts(options.nodes)
+    proxy: subprocess.Popen[bytes] | None = None
+    if options.scenario == "distributed":
+        if not options.master:
+            log.error("--master e obrigatorio no cenario distributed")
+            return 1
+        workers = tuple(h for h in nodes if h != options.master)
+        result = coordinator.promote_master(
+            options.master, workers, options.model,
+            parallel=options.parallel, port=options.port)
+        endpoint = f"http://{options.master}:{options.port}"
+    else:
+        result = coordinator.configure_replicas(
+            nodes, options.model,
+            parallel=options.parallel, port=options.port,
+            haproxy_path=options.output_dir / "haproxy.cfg")
+        proxy = subprocess.Popen(
+            ["haproxy", "-f", str(result.haproxy_path)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        endpoint = f"http://127.0.0.1:{options.port}"
+
+    probe = HttpHealthProbe()
+    ready = wait_until(
+        lambda: probe.ready(f"{endpoint}/health"),
+        timeout=options.health_timeout)
+    if not ready:
+        log.error("%s nao ficou pronto apos %ss", endpoint, options.health_timeout)
+        return 1
+
+    bench_opts = argparse.Namespace(
+        profile=options.profile, scenario=options.scenario,
+        endpoint=[endpoint], output_dir=options.output_dir,
+        health_timeout=options.health_timeout)
+    exit_code = run_bench_capacity(bench_opts)
+
+    if proxy is not None:
+        proxy.terminate()
+        try:
+            proxy.wait(5)
+        except subprocess.TimeoutExpired:
+            proxy.kill()
+    return exit_code
 
 
 def run_bench_capacity(options: argparse.Namespace) -> int:
