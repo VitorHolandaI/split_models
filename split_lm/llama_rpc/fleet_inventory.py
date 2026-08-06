@@ -37,8 +37,9 @@ def inventory_sections_command() -> list[str]:
     Usage example: `result = ssh.run(host, inventory_sections_command())`.
     """
     script = (
-        "printf 'SECTION hostname\\n'; hostname\n"
-        "printf 'SECTION ip\\n'; hostname -I\n"
+"printf 'SECTION hostname\\n'; uname -n\n"
+            "printf 'SECTION ip\\n'; ip -4 -o addr show scope global | "
+            "cut -d' ' -f7 | cut -d/ -f1 | tr '\\n' ' '\n"
         "printf 'SECTION memtotal\\n'; grep '^MemTotal:' /proc/meminfo\n"
         "printf 'SECTION status\\n'; /usr/local/bin/split-llama mode status --brief\n"
         f"printf 'SECTION build\\n'; sed -n 's/^commit: //p' {_BUILD_INFO} 2>/dev/null || true\n"
