@@ -243,6 +243,12 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="porta HTTP dos servidores inferencia")
     bench.add_argument("--output-dir", type=Path, default=Path("benchmark-results"),
                        help="onde gravar requests.jsonl e summary.csv")
+    bench.add_argument("--auto-discover", action="store_true",
+                       help="descobre nos via UDP broadcast em vez de --nodes")
+    bench.add_argument("--broadcast-address", default="255.255.255.255",
+                       help="endereco de broadcast para discovery")
+    bench.add_argument("--discovery-timeout", type=float, default=10.0,
+                       help="segundos escutando respostas de discovery")
     bench.add_argument("--health-timeout", type=float, default=900.0,
                        help="segundos esperando GET /health")
 
@@ -510,19 +516,28 @@ def run_fleet(options: argparse.Namespace) -> int:
 def _run_fleet_bench(coordinator: FleetCoordinator,
                      options: argparse.Namespace) -> int:
     """Inventory -> promote -> HAProxy -> bench-capacity -> cleanup."""
+    from .discovery import discover_workers
     from .health import HttpHealthProbe, wait_until
 
-    nodes = _split_hosts(options.nodes)
+    if options.auto_discover:
+        found = discover_workers(timeout=options.discovery_timeout,
+                                 broadcast_address=options.broadcast_address)
+        nodes = tuple(w.address for w in found)
+        if not nodes:
+            log.error("nenhum no descoberto via UDP broadcast em %ss",
+                      options.discovery_timeout)
+            return 1
+        log.info("descobertos: %s", nodes)
+    else:
+        nodes = _split_hosts(options.nodes)
     proxy: subprocess.Popen[bytes] | None = None
     if options.scenario == "distributed":
-        if not options.master:
-            log.error("--master e obrigatorio no cenario distributed")
-            return 1
-        workers = tuple(h for h in nodes if h != options.master)
+        master = options.master or nodes[0]
+        workers = tuple(h for h in nodes if h != master)
         result = coordinator.promote_master(
-            options.master, workers, options.model,
+            master, workers, options.model,
             parallel=options.parallel, port=options.port)
-        endpoint = f"http://{options.master}:{options.port}"
+        endpoint = f"http://{master}:{options.port}"
     else:
         result = coordinator.configure_replicas(
             nodes, options.model,
