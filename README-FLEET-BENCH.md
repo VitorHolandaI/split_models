@@ -19,17 +19,24 @@ split-llama worker --bind 192.168.0.10
 > worker com `--bind <ip-da-lan>` (ou config a rota padrão na LAN).
 > Sem isso o `fleet bench --auto-discover` só acha o nó local.
 
-## Fluxo rápido (copiar/colar — 1ª vez por máquina)
+## Fluxo rápido (copiar/colar)
 
-Na máquina coordenadora (qualquer uma que alcance as outras pela LAN):
+> **Onde roda cada comando:** as máquinas do lab bootam a ISO e NÃO têm o
+> repositório. O `split-llama` existe nelas em `/usr/local/bin/split-llama`,
+> mas a chave privada da frota **não** está na ISO (gitignored). Então:
+> - Passo 0: roda **na sua máquina** (que tem o repo clonado)
+> - Passos 1-4: rodam **dentro de qualquer máquina do lab** (via SSH ou console)
 
 ```bash
-# 0. Uma vez por máquina: copia a chave privada da frota
-#    (as ISOs já têm a pública em authorized_keys)
+# 0. NA SUA MÁQUINA (tem o repo): copia a chave privada para cada nó, uma vez
+#    (as ISOs já têm a pública em authorized_keys, então o scp autentica)
 scp -i deploy/keys/split-models-appliance deploy/keys/split-models-appliance \
   root@192.168.0.10:/root/.ssh/fleet_ed25519
+scp -i deploy/keys/split-models-appliance deploy/keys/split-models-appliance \
+  root@192.168.0.20:/root/.ssh/fleet_ed25519
 
-# 1. Confere se os workers aparecem (os 3 devem listar)
+# 1. DENTRO DE UM NÓ (via ssh -i deploy/keys/split-models-appliance root@192.168.0.10):
+#    confere se os workers aparecem (todos devem listar)
 split-llama nodes --broadcast 192.168.0.255 --timeout 5
 
 # 2. Bench automático — réplica + HAProxy (testado com 3 nós)
@@ -54,7 +61,9 @@ split-llama fleet bench \
 split-llama fleet reboot --broadcast-address 192.168.0.255
 ```
 
-Resultado em `benchmark-results/capacity-summary.csv`.
+Resultado em `benchmark-results/capacity-summary.csv` (no nó coordenador,
+que na ISO aponta para `/run/split-models/benchmark-results` — a RAM da
+máquina, some no reboot; copie os arquivos antes de desligar).
 
 ## Pré-requisitos
 
@@ -66,20 +75,24 @@ Resultado em `benchmark-results/capacity-summary.csv`.
 
 ## SSH nos nós
 
-Para entrar numa máquina que bootou a ISO, use a chave da appliance:
+Para entrar numa máquina que bootou a ISO, use a chave da appliance
+**a partir da sua máquina** (onde o repo está clonado):
 
 ```bash
-# Deste repositório (chave privada)
 ssh -i deploy/keys/split-models-appliance root@192.168.0.10
+```
 
-# Ou depois de copiar para ~/.ssh
+Ou depois de copiar para `~/.ssh`:
+
+```bash
 cp deploy/keys/split-models-appliance ~/.ssh/
 ssh -i ~/.ssh/split-models-appliance root@192.168.0.10
 ```
 
-Para o `fleet` funcionar, a chave precisa estar no caminho padrão
-`/root/.ssh/fleet_ed25519`. Nas máquinas bootando a ISO, copie a chave
-privada para lá (uma vez por máquina):
+Para o `fleet` funcionar **de dentro de um nó**, a chave precisa estar no
+caminho padrão `/root/.ssh/fleet_ed25519` nesse nó. A ISO NÃO inclui a
+chave privada (só a pública em `authorized_keys`) — copie uma vez por
+máquina, da sua máquina:
 
 ```bash
 scp -i deploy/keys/split-models-appliance deploy/keys/split-models-appliance \
