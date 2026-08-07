@@ -26,24 +26,27 @@ split-llama worker --bind 192.168.0.10
 Entre na máquina que será o coordenador (console, SSH, físico). Lá:
 
 ```bash
-# 1. Para o worker que subiu automático no boot da ISO
+# 1. Descobre os workers na rede (UDP broadcast)
+split-llama nodes
+
+# 2. Para o worker que subiu automático no boot da ISO
 systemctl stop split-llama-worker.service
 
-# 2. Escolhe o modo:
+# 3. Escolhe o modo:
 
 # Opção A — réplica (carrega o modelo e serve HTTP sozinho)
 split-llama mode replica --model small --port 8080
 
-# Opção B — master distribuído (usa workers RPC da rede)
+# Opção B — master distribuído (usa workers RPC descobertos)
 split-llama mode distributed-master \
   --model small \
   --rpc 192.168.0.10:50052,192.168.0.20:50052
 
-# 3. Bench contra a própria máquina
+# 4. Bench contra a própria máquina
 split-llama bench-capacity --profile users-2k \
   --scenario replicated --endpoint http://127.0.0.1:8080
 
-# 4. Para voltar ao worker depois
+# 5. Para voltar ao worker depois
 systemctl start split-llama-worker.service
 ```
 
