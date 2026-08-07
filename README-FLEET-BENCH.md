@@ -21,6 +21,38 @@ split-llama worker --bind 192.168.0.10
 - Chave SSH da frota em `~/.ssh/fleet_ed25519` nos nós
   (a ISO já tem a pública em `authorized_keys`)
 
+## SSH nos nós
+
+Para entrar numa máquina que bootou a ISO, use a chave da appliance:
+
+```bash
+# Deste repositório (chave privada)
+ssh -i deploy/keys/split-models-appliance root@192.168.0.10
+
+# Ou depois de copiar para ~/.ssh
+cp deploy/keys/split-models-appliance ~/.ssh/
+ssh -i ~/.ssh/split-models-appliance root@192.168.0.10
+```
+
+Para o `fleet` funcionar, a chave precisa estar no caminho padrão
+`/root/.ssh/fleet_ed25519`. Nas máquinas bootando a ISO, copie a chave
+privada para lá (uma vez por máquina):
+
+```bash
+scp -i deploy/keys/split-models-appliance deploy/keys/split-models-appliance \
+  root@192.168.0.10:/root/.ssh/fleet_ed25519
+```
+
+## Reiniciar todos os nós
+
+```bash
+# Descobre via UDP broadcast e manda reboot em todos
+split-llama fleet reboot
+
+# Ou com broadcast específico da rede
+split-llama fleet reboot --broadcast-address 192.168.0.255
+```
+
 ## Fluxo manual (sem fleet — você vai na máquina e faz)
 
 Entre na máquina que será o coordenador (console, SSH, físico). Lá:

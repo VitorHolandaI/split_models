@@ -222,6 +222,13 @@ def _build_parser() -> argparse.ArgumentParser:
     reset.add_argument("--nodes", required=True,
                        help="hosts SSH separados por virgula")
 
+    reboot = fleet_sub.add_parser(
+        "reboot", help="reinicia todos os nos descobertos via UDP broadcast")
+    reboot.add_argument("--broadcast-address", default="255.255.255.255",
+                        help="endereco de broadcast para discovery")
+    reboot.add_argument("--discovery-timeout", type=float, default=10.0,
+                        help="segundos escutando respostas de discovery")
+
     bench = fleet_sub.add_parser(
         "bench", help="inventario + promocao + HAProxy + bench-capacity em um comando")
     bench.add_argument("--scenario", required=True,
@@ -503,6 +510,8 @@ def run_fleet(options: argparse.Namespace) -> int:
             return 0
         if options.fleet_command == "bench":
             return _run_fleet_bench(coordinator, options)
+        if options.fleet_command == "reboot":
+            return _run_fleet_reboot(coordinator, options)
         result = coordinator.reset(_split_hosts(options.nodes))
         print("nos em modo worker")
         print(f"registro: {result}")
@@ -511,6 +520,31 @@ def run_fleet(options: argparse.Namespace) -> int:
             OSError, ValueError) as error:
         log.error("%s", error)
         return 1
+
+
+def _run_fleet_reboot(coordinator: FleetCoordinator,
+                      options: argparse.Namespace) -> int:
+    """Discover every node and reboot it over SSH."""
+    from .discovery import discover_workers
+    from .fleet_ssh import SshKeyRunner
+
+    found = discover_workers(timeout=options.discovery_timeout,
+                             broadcast_address=options.broadcast_address)
+    nodes = tuple(w.address for w in found)
+    if not nodes:
+        log.error("nenhum no descoberto via UDP broadcast em %ss",
+                  options.discovery_timeout)
+        return 1
+    runner = SshKeyRunner("deploy/keys/split-models-appliance", user="root")
+    log.info("reiniciando %s", nodes)
+    for node in nodes:
+        try:
+            runner.run(node, ["reboot"])
+            log.info("%s: reboot enviado", node)
+        except SshError as error:
+            log.error("%s", error)
+            return 1
+    return 0
 
 
 def _run_fleet_bench(coordinator: FleetCoordinator,
@@ -530,7 +564,7 @@ def _run_fleet_bench(coordinator: FleetCoordinator,
                       options.discovery_timeout)
             return 1
         log.info("descobertos: %s", nodes)
-        runner = SshKeyRunner(FLEET_KEY, user="root")
+        runner = SshKeyRunner("deploy/keys/split-models-appliance", user="root")
         model_repo = MODEL_PROFILES[options.model]
         for node in nodes:
             remote = f"root@{node}"
