@@ -21,7 +21,54 @@ split-llama worker --bind 192.168.0.10
 - Chave SSH da frota em `~/.ssh/fleet_ed25519` nos nós
   (a ISO já tem a pública em `authorized_keys`)
 
-## Fluxo completo (automático)
+## Fluxo manual (sem fleet — você vai na máquina e faz)
+
+Entre na máquina que será o coordenador (console, SSH, físico). Lá:
+
+```bash
+# 1. Para o worker que subiu automático no boot da ISO
+systemctl stop split-llama-worker.service
+
+# 2. Escolhe o modo:
+
+# Opção A — réplica (carrega o modelo e serve HTTP sozinho)
+split-llama mode replica --model small --port 8080
+
+# Opção B — master distribuído (usa workers RPC da rede)
+split-llama mode distributed-master \
+  --model small \
+  --rpc 192.168.0.10:50052,192.168.0.20:50052
+
+# 3. Bench contra a própria máquina
+split-llama bench-capacity --profile users-2k \
+  --scenario replicated --endpoint http://127.0.0.1:8080
+
+# 4. Para voltar ao worker depois
+systemctl start split-llama-worker.service
+```
+
+Para HAProxy (cenário réplica com várias máquinas), gere o `haproxy.cfg`
+e suba na máquina que alcança todas as réplicas:
+
+```bash
+# Gera config apontando para as réplicas
+uv run python -c "
+from split_lm.llama_rpc.haproxy import haproxy_config
+print(haproxy_config((
+  ('node1', '192.168.0.10:8080'),
+  ('node2', '192.168.0.20:8080'),
+)))
+" > haproxy.cfg
+
+# Sobe o HAProxy
+haproxy -f haproxy.cfg
+
+# Bench contra o HAProxy
+split-llama bench-capacity --profile users-2k \
+  --scenario replicated --endpoint http://127.0.0.1:8080
+```
+
+## Fluxo automático (fleet — via SSH de qualquer máquina)
 
 No nó coordenador, um comando só — descobre os nós, promove, sobe HAProxy,
 roda bench:
