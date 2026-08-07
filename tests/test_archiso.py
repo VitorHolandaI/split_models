@@ -173,7 +173,7 @@ SPLIT_VM_WIFI_INTERFACE=wlan0 resolve_vm_bind_address
         self.assertIn("split-cluster nodes", commands)
         self.assertIn("split-cluster benchmarks", commands)
 
-    def test_physical_console_autologs_in_and_opens_bpytop(self):
+    def test_physical_console_autologs_in_and_opens_btop(self):
         packages = (ARCHISO / "packages.x86_64").read_text(encoding="utf-8").splitlines()
         autologin = (ARCHISO / "airootfs" / "etc" / "systemd" / "system" /
                      "getty@tty1.service.d" / "autologin.conf")
@@ -185,18 +185,18 @@ SPLIT_VM_WIFI_INTERFACE=wlan0 resolve_vm_bind_address
         monitor = (ARCHISO / "airootfs" / "usr" / "local" / "bin" /
                    "split-models-monitor")
 
-        self.assertIn("bpytop", packages)
+        self.assertIn("btop", packages)
         self.assertIn("--autologin root", autologin.read_text(encoding="utf-8"))
         startup = profile.read_text(encoding="utf-8")
         self.assertIn("/dev/tty1", startup)
         self.assertIn("tmux attach-session -t split-models", startup)
-        self.assertNotIn("bpytop", startup)
+        self.assertNotIn("btop", startup)
         self.assertIn("split-models-tmux", service.read_text(encoding="utf-8"))
         layout = tmux_launcher.read_text(encoding="utf-8")
         self.assertIn("new-session", layout)
         self.assertIn("split-window -h -p 35", layout)
         monitor_script = monitor.read_text(encoding="utf-8")
-        self.assertIn("bpytop", monitor_script)
+        self.assertIn("btop", monitor_script)
         self.assertIn("exec /usr/bin/bash", monitor_script)
 
     def test_serial_console_autologs_in_for_headless_vm(self):

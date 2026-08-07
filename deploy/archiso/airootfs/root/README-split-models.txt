@@ -2,8 +2,8 @@ SPLIT MODELS - GUIA RAPIDO
 ==========================
 
 O tty1 anexa automaticamente a sessao tmux "split-models". O painel esquerdo
-mostra o worker/log (65%) e o direito abre bpytop (35%). Use Ctrl-b + setas para
-alternar. Pressione q no bpytop para deixar um shell no painel direito.
+mostra o worker/log (65%) e o direito abre btop (35%). Use Ctrl-b + setas para
+alternar. Pressione q no btop para deixar um shell no painel direito.
 Pressione Ctrl-C no painel do worker antes de promover o no a master.
 A barra inferior mostra sempre role, node ID e IPv4 local desta maquina.
 

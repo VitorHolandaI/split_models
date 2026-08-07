@@ -11,7 +11,7 @@ vertical em PyTorch com split-cluster; esta roda llama.cpp por RPC com
 split-llama. Sao motores diferentes e comandos diferentes.
 
 O tty1 anexa a sessao tmux "split-models". Painel esquerdo: logs das unidades.
-Painel direito: bpytop. Ctrl-b + setas alterna. O painel esquerdo so segue os
+Painel direito: btop. Ctrl-b + setas alterna. O painel esquerdo so segue os
 logs: worker e servidor sao supervisionados pelo systemd
 (split-llama-worker.service, split-llama-server.service), nao pelo tmux.
 

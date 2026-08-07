@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 
-bpytop
-printf '\nbpytop encerrado. Execute bpytop para abrir novamente.\n'
+btop
+printf '\nbtop encerrado. Execute btop para abrir novamente.\n'
 printf 'Use Ctrl-b e setas para alternar entre os paineis.\n'
 exec /usr/bin/bash

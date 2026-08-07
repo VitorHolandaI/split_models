@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 set -euo pipefail
 
-# Mesmo layout da imagem estavel -- worker a esquerda, bpytop a direita -- para
+# Mesmo layout da imagem estavel -- worker a esquerda, btop a direita -- para
 # que o operador nao precise reaprender a tela. O aviso de RPC inseguro fica na
 # barra: a variante expoe execucao remota de codigo sem autenticacao, e isso
 # tem que estar visivel, nao so na documentacao.
