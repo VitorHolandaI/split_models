@@ -517,7 +517,9 @@ def _run_fleet_bench(coordinator: FleetCoordinator,
                      options: argparse.Namespace) -> int:
     """Inventory -> promote -> HAProxy -> bench-capacity -> cleanup."""
     from .discovery import discover_workers
+    from .fleet_ssh import SshKeyRunner
     from .health import HttpHealthProbe, wait_until
+    from .mode_state import Mode, ModeConfig, MODEL_PROFILES
 
     if options.auto_discover:
         found = discover_workers(timeout=options.discovery_timeout,
@@ -528,28 +530,59 @@ def _run_fleet_bench(coordinator: FleetCoordinator,
                       options.discovery_timeout)
             return 1
         log.info("descobertos: %s", nodes)
+        runner = SshKeyRunner(FLEET_KEY, user="root")
+        model_repo = MODEL_PROFILES[options.model]
+        for node in nodes:
+            remote = f"root@{node}"
+            log.info("promovendo %s a %s", remote, options.scenario)
+            runner.run(remote, "systemctl stop split-llama-worker.service")
+            if options.scenario == "distributed":
+                rpc = ",".join(f"{h}:{options.rpc_port or 50052}" for h in nodes if h != node)
+                runner.run(remote,
+                           f"split-llama mode distributed-master "
+                           f"--model {options.model} --rpc {rpc} "
+                           f"--parallel {options.parallel} --port {options.port}")
+            else:
+                runner.run(remote,
+                           f"split-llama mode replica "
+                           f"--model {options.model} "
+                           f"--parallel {options.parallel} --port {options.port}")
+        if options.scenario == "replicated":
+            servers = tuple((f"node-{i}", f"{h}:{options.port}")
+                            for i, h in enumerate(nodes))
+            from .haproxy import haproxy_config
+            haproxy_path = options.output_dir / "haproxy.cfg"
+            haproxy_path.parent.mkdir(parents=True, exist_ok=True)
+            haproxy_path.write_text(haproxy_config(servers, options.port))
+            proxy = subprocess.Popen(
+                ["haproxy", "-f", str(haproxy_path)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            endpoint = f"http://127.0.0.1:{options.port}"
+        else:
+            proxy = None
+            endpoint = f"http://{nodes[0]}:{options.port}"
     else:
         if not options.nodes:
             log.error("informe --nodes ou --auto-discover")
             return 1
         nodes = _split_hosts(options.nodes)
-    proxy: subprocess.Popen[bytes] | None = None
-    if options.scenario == "distributed":
-        master = options.master or nodes[0]
-        workers = tuple(h for h in nodes if h != master)
-        result = coordinator.promote_master(
-            master, workers, options.model,
-            parallel=options.parallel, port=options.port)
-        endpoint = f"http://{master}:{options.port}"
-    else:
-        result = coordinator.configure_replicas(
-            nodes, options.model,
-            parallel=options.parallel, port=options.port,
-            haproxy_path=options.output_dir / "haproxy.cfg")
-        proxy = subprocess.Popen(
-            ["haproxy", "-f", str(result.haproxy_path)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        endpoint = f"http://127.0.0.1:{options.port}"
+        proxy = None
+        if options.scenario == "distributed":
+            master = options.master or nodes[0]
+            workers = tuple(h for h in nodes if h != master)
+            result = coordinator.promote_master(
+                master, workers, options.model,
+                parallel=options.parallel, port=options.port)
+            endpoint = f"http://{master}:{options.port}"
+        else:
+            result = coordinator.configure_replicas(
+                nodes, options.model,
+                parallel=options.parallel, port=options.port,
+                haproxy_path=options.output_dir / "haproxy.cfg")
+            proxy = subprocess.Popen(
+                ["haproxy", "-f", str(result.haproxy_path)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            endpoint = f"http://127.0.0.1:{options.port}"
 
     probe = HttpHealthProbe()
     ready = wait_until(
