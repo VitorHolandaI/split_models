@@ -72,18 +72,32 @@ vm_wan_netdev() {
 # do host, que com VPN/ethernet policy-routing sai pela interface errada e os
 # frames nunca voltam para a outra VM (ARP FAILED, RX=0). listen/connect por
 # loopback nao depende de rota nenhuma; por isso o no 1 precisa subir primeiro.
+# Como o listen aceita UMA conexao, o no 1 tem uma NIC de LAN por no adicional
+# (enp0s4, enp0s5, ...) e faz bridge em software (br0) unindo todos os nos.
 vm_lan_netdev() {
     local node="$1" port="${SPLIT_VM_LAN_PORT:-1234}"
     if [[ "$node" == "1" ]]; then
         printf 'socket,id=lan,listen=127.0.0.1:%s\n' "$port"
     else
-        printf 'socket,id=lan,connect=127.0.0.1:%s\n' "$port"
+        # no N conecta no listener (N-1) do no 1: no 2 -> 1234, no 3 -> 1235
+        printf 'socket,id=lan,connect=127.0.0.1:%s\n' $((port + node - 2))
     fi
+}
+
+# NIC adicional de LAN para o no 1: uma por no conectado, cada uma com seu
+# listener. Sem elas o hub so aceitaria o primeiro connect e o no 3+ ficaria
+# fora do segmento (ARP FAILED).
+vm_extra_lan_netdev() {
+    local node="$1" extra="$2" port="${SPLIT_VM_LAN_PORT:-1234}"
+    if [[ "$node" != "1" ]]; then
+        return 0
+    fi
+    printf 'socket,id=lan%s,listen=127.0.0.1:%s\n' "$extra" $((port + extra))
 }
 
 main() {
     local node="${1:-}"
-    [[ "$node" == "1" || "$node" == "2" ]] || { usage; exit 1; }
+    [[ "$node" =~ ^[0-9]+$ ]] || { usage; exit 1; }
     [[ -e /dev/kvm ]] || { printf '/dev/kvm ausente; esperado KVM habilitado\n' >&2; exit 1; }
     # Sem o "|| exit", o antigo "exit 1" de latest_iso morria na subshell da
     # substituicao de comando e o erro real virava "ISO invalida: ".
@@ -121,6 +135,12 @@ main() {
         -device "virtio-net-pci,netdev=wan,mac=52:54:00:76:0$node:01,addr=0x3" \
         -netdev "$lan_netdev" \
         -device "virtio-net-pci,netdev=lan,mac=52:54:00:76:0$node:02,addr=0x4" \
+        $(if [[ "$node" == "1" ]]; then for extra in 1 2 3 4; do
+            printf -- '-netdev socket,id=lan%s,listen=127.0.0.1:%s ' \
+                "$extra" $((1234 + extra))
+            printf -- '-device virtio-net-pci,netdev=lan%s,mac=52:54:00:76:01:0%s,addr=0x%s ' \
+                "$extra" $((2 + extra)) $((4 + extra))
+        done; fi) \
         -display none -serial "${SPLIT_VM_SERIAL:-mon:stdio}"
 }
 

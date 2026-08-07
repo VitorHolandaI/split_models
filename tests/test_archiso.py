@@ -149,6 +149,14 @@ SPLIT_VM_WIFI_INTERFACE=wlan0 resolve_vm_bind_address
         self.assertEqual(node2.returncode, 0, node2.stderr)
         self.assertEqual(node2.stdout.strip(), "socket,id=lan,connect=127.0.0.1:1234")
 
+    def test_lan_netdev_node3_connects_to_second_listener(self):
+        # O listener do no 1 aceita UMA conexao: cada no adicional conecta no
+        # listener (N-1). Sem isso o no 3+ ficava fora do segmento (ARP FAILED).
+        node3 = run_vm_launcher_helper("vm_lan_netdev 3")
+
+        self.assertEqual(node3.returncode, 0, node3.stderr)
+        self.assertEqual(node3.stdout.strip(), "socket,id=lan,connect=127.0.0.1:1235")
+
     def test_lan_netdev_honours_split_vm_lan_port(self):
         result = run_vm_launcher_helper(
             "SPLIT_VM_LAN_PORT=2345 vm_lan_netdev 2")
