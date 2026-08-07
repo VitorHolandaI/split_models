@@ -535,7 +535,7 @@ def _run_fleet_reboot(coordinator: FleetCoordinator,
         log.error("nenhum no descoberto via UDP broadcast em %ss",
                   options.discovery_timeout)
         return 1
-    runner = SshKeyRunner("deploy/keys/split-models-appliance", user="root")
+    runner = SshKeyRunner(FLEET_KEY, user="root")
     log.info("reiniciando %s", nodes)
     for node in nodes:
         try:
@@ -564,28 +564,29 @@ def _run_fleet_bench(coordinator: FleetCoordinator,
                       options.discovery_timeout)
             return 1
         log.info("descobertos: %s", nodes)
-        runner = SshKeyRunner("deploy/keys/split-models-appliance", user="root")
-        model_repo = MODEL_PROFILES[options.model]
+        runner = SshKeyRunner(FLEET_KEY, user="root")
         for node in nodes:
-            remote = f"root@{node}"
-            log.info("promovendo %s a %s", remote, options.scenario)
-            runner.run(remote, "systemctl stop split-llama-worker.service")
+            log.info("promovendo %s a %s", node, options.scenario)
+            runner.run(node, ["systemctl", "stop", "split-llama-worker.service"])
             if options.scenario == "distributed":
-                rpc = ",".join(f"{h}:{options.rpc_port or 50052}" for h in nodes if h != node)
-                runner.run(remote,
-                           f"split-llama mode distributed-master "
-                           f"--model {options.model} --rpc {rpc} "
-                           f"--parallel {options.parallel} --port {options.port}")
+                rpc = ",".join(f"{h}:{options.rpc_port or 50052}"
+                               for h in nodes if h != node)
+                runner.run(node, [
+                    "split-llama", "mode", "distributed-master",
+                    "--model", options.model, "--rpc", rpc,
+                    "--parallel", str(options.parallel),
+                    "--port", str(options.port)])
             else:
-                runner.run(remote,
-                           f"split-llama mode replica "
-                           f"--model {options.model} "
-                           f"--parallel {options.parallel} --port {options.port}")
+                runner.run(node, [
+                    "split-llama", "mode", "replica",
+                    "--model", options.model,
+                    "--parallel", str(options.parallel),
+                    "--port", str(options.port)])
         if options.scenario == "replicated":
             servers = tuple((f"node-{i}", f"{h}:{options.port}")
                             for i, h in enumerate(nodes))
             from .haproxy import haproxy_config
-            haproxy_path = options.output_dir / "haproxy.cfg"
+            haproxy_path = options.output_dir.resolve() / "haproxy.cfg"
             haproxy_path.parent.mkdir(parents=True, exist_ok=True)
             haproxy_path.write_text(haproxy_config(servers, options.port))
             proxy = subprocess.Popen(
@@ -675,13 +676,14 @@ def run_bench_capacity(options: argparse.Namespace) -> int:
             [summarize_point(result) for result in results])
         summaries = [summarize_point(result, flag)
                      for result, flag in zip(results, flags)]
-        options.output_dir.mkdir(parents=True, exist_ok=True)
-        write_summary_csv(summaries, options.output_dir / "capacity-summary.csv")
+        resolved_dir = options.output_dir.resolve()
+        resolved_dir.mkdir(parents=True, exist_ok=True)
+        write_summary_csv(summaries, resolved_dir / "capacity-summary.csv")
         for result in results:
             write_request_jsonl(
                 result.records,
-                options.output_dir / f"capacity-{result.profile}-requests.jsonl")
-        print(f"resumo: {options.output_dir / 'capacity-summary.csv'}")
+                resolved_dir / f"capacity-{result.profile}-requests.jsonl")
+        print(f"resumo: {resolved_dir / 'capacity-summary.csv'}")
         return 0
     except (CapacityProfileError, OSError, ValueError) as error:
         log.error("%s", error)
