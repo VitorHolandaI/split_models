@@ -13,6 +13,49 @@ basta rodar o worker manualmente:
 split-llama worker --bind 192.168.0.10
 ```
 
+> **Importante (discovery):** o worker do boot da ISO anuncia o IP da
+> rota padrão (o NAT, ex: 10.0.2.15), que não serve para as outras
+> máquinas acharem. Para o discovery reportar o IP da LAN, suba o
+> worker com `--bind <ip-da-lan>` (ou config a rota padrão na LAN).
+> Sem isso o `fleet bench --auto-discover` só acha o nó local.
+
+## Fluxo rápido (copiar/colar — 1ª vez por máquina)
+
+Na máquina coordenadora (qualquer uma que alcance as outras pela LAN):
+
+```bash
+# 0. Uma vez por máquina: copia a chave privada da frota
+#    (as ISOs já têm a pública em authorized_keys)
+scp -i deploy/keys/split-models-appliance deploy/keys/split-models-appliance \
+  root@192.168.0.10:/root/.ssh/fleet_ed25519
+
+# 1. Confere se os workers aparecem (os 3 devem listar)
+split-llama nodes --broadcast 192.168.0.255 --timeout 5
+
+# 2. Bench automático — réplica + HAProxy (testado com 3 nós)
+split-llama fleet bench \
+  --scenario replicated \
+  --model small \
+  --profile users-2k \
+  --auto-discover \
+  --broadcast-address 192.168.0.255 \
+  --discovery-timeout 10
+
+# 3. Bench automático — distribuído (master + workers RPC)
+split-llama fleet bench \
+  --scenario distributed \
+  --model small \
+  --profile users-2k \
+  --auto-discover \
+  --broadcast-address 192.168.0.255 \
+  --discovery-timeout 10
+
+# 4. Reinicia todos os nós (reboot limpo para começar de novo)
+split-llama fleet reboot --broadcast-address 192.168.0.255
+```
+
+Resultado em `benchmark-results/capacity-summary.csv`.
+
 ## Pré-requisitos
 
 - ISO construída: `dist/llamacpp-rpc/split-models-llamacpp-rpc-*.iso`
