@@ -522,6 +522,20 @@ def run_fleet(options: argparse.Namespace) -> int:
         return 1
 
 
+def _resolve_fleet_key() -> str:
+    """Pick the fleet key: repo copy (operator machine) or ISO copy.
+
+    The operator runs from the cloned repo, where the private key lives at
+    `deploy/keys/split-models-appliance`. A node booting the ISO has no repo
+    and uses the key copied to `FLEET_KEY`. Prefer the repo one so running
+    from the operator machine needs zero preparation.
+    """
+    repo_key = Path("deploy/keys/split-models-appliance")
+    if repo_key.exists():
+        return str(repo_key)
+    return FLEET_KEY
+
+
 def _run_fleet_reboot(coordinator: FleetCoordinator,
                       options: argparse.Namespace) -> int:
     """Discover every node and reboot it over SSH."""
@@ -535,7 +549,7 @@ def _run_fleet_reboot(coordinator: FleetCoordinator,
         log.error("nenhum no descoberto via UDP broadcast em %ss",
                   options.discovery_timeout)
         return 1
-    runner = SshKeyRunner(FLEET_KEY, user="root")
+    runner = SshKeyRunner(_resolve_fleet_key(), user="root")
     log.info("reiniciando %s", nodes)
     for node in nodes:
         try:
@@ -564,7 +578,7 @@ def _run_fleet_bench(coordinator: FleetCoordinator,
                       options.discovery_timeout)
             return 1
         log.info("descobertos: %s", nodes)
-        runner = SshKeyRunner(FLEET_KEY, user="root")
+        runner = SshKeyRunner(_resolve_fleet_key(), user="root")
         for node in nodes:
             log.info("promovendo %s a %s", node, options.scenario)
             runner.run(node, ["systemctl", "stop", "split-llama-worker.service"])
