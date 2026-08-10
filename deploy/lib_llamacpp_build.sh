@@ -254,6 +254,23 @@ stage_variant_extras() {
     cp -a "$llama_destdir/." "$staged_profile/airootfs/"
     append_llama_file_permissions
     write_llama_build_info
+    embed_fleet_key
+}
+
+# A ISO ja traz a publica em authorized_keys; sem a privada o fleet nao roda
+# de dentro do no (caminho fixo /root/.ssh/fleet_ed25519). A chave fica no
+# diretorio deploy/keys (gitignored) e nunca no historico: quem tem a ISO
+# controla a frota toda, entao ela e para LAN isolada de laboratorio.
+embed_fleet_key() {
+    local source_key="$repo_root/deploy/keys/split-models-appliance"
+    local target="$staged_profile/airootfs/root/.ssh/fleet_ed25519"
+    if [[ ! -f "$source_key" ]]; then
+        printf 'chave privada ausente em %s; gere em deploy/keys/ primeiro\n' \
+            "$source_key" >&2
+        exit 1
+    fi
+    install -d -m 0700 "$(dirname "$target")"
+    install -m 0600 "$source_key" "$target"
 }
 
 # vim: set ft=sh:

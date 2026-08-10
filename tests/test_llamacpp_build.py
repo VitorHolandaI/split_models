@@ -144,6 +144,17 @@ class LlamaStagingTest(unittest.TestCase):
         self.assertLess(base, override)
         self.assertIn("stage_variant_extras", LLAMA_LIB.read_text(encoding="utf-8"))
 
+    def test_fleet_key_is_embedded_at_the_fleet_path(self):
+        # Sem a privada em /root/.ssh/fleet_ed25519 o `fleet bench` nao roda
+        # de dentro do no. A chave vem de deploy/keys (gitignored) e vai para
+        # o caminho fixo que o SshKeyRunner procura.
+        lib = LLAMA_LIB.read_text(encoding="utf-8")
+
+        self.assertIn("embed_fleet_key", lib)
+        self.assertIn("stage_variant_extras", lib)
+        self.assertIn("/root/.ssh/fleet_ed25519", lib)
+        self.assertIn("deploy/keys/split-models-appliance", lib)
+
     def test_missing_build_tools_stop_the_run_before_any_staging(self):
         variant = (ROOT / "deploy" / "build_llamacpp_archiso.sh").read_text(
             encoding="utf-8")
