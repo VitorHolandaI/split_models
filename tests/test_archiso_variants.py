@@ -298,6 +298,26 @@ class SupervisedUnitsTest(unittest.TestCase):
         self.assertEqual(worker_link.readlink().name, "split-llama-worker.service")
         self.assertFalse((wants / "split-llama-server.service").exists())
 
+    def test_fleet_discovery_is_independent_from_worker_mode(self):
+        session_unit = self.overlay_file(
+            "etc/systemd/system/split-models.service")
+        discovery_unit = self.overlay_file(
+            "etc/systemd/system/split-llama-fleet-discovery.service")
+
+        self.assertIn("Wants=network-online.target split-llama-fleet-discovery.service",
+                      session_unit)
+        self.assertIn("split-llama fleet-agent", discovery_unit)
+        self.assertIn("--node-id node-%m", discovery_unit)
+        self.assertNotIn("--node-id node-%H", discovery_unit)
+        self.assertIn("Restart=always", discovery_unit)
+
+    def test_live_nodes_use_machine_id_instead_of_shared_hostname(self):
+        worker_unit = self.overlay_file(
+            "etc/systemd/system/split-llama-worker.service")
+
+        self.assertIn("--node-id node-%m", worker_unit)
+        self.assertNotIn("--node-id node-%H", worker_unit)
+
     def test_server_unit_execs_the_recorded_effective_command(self):
         server_unit = self.overlay_file(
             "etc/systemd/system/split-llama-server.service")

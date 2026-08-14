@@ -142,7 +142,8 @@ class MasterTransitionTest(ModeControllerTestBase):
         self.assertIs(state.mode, Mode.DISTRIBUTED_MASTER)
         self.assertEqual(
             self.units.calls,
-            [("stop", WORKER_UNIT), ("start", SERVER_UNIT)])
+            [("stop", WORKER_UNIT), ("stop", SERVER_UNIT),
+             ("start", SERVER_UNIT)])
         self.assertEqual(self.units.active, {SERVER_UNIT})
 
     def test_master_waits_for_the_rpc_port_to_close_before_serving(self):
@@ -176,6 +177,15 @@ class ReplicaTransitionTest(ModeControllerTestBase):
         self.assertIs(state.mode, Mode.REPLICA)
         self.assertNotIn("--rpc", self.store.read_command())
         self.assertEqual(self.units.active, {SERVER_UNIT})
+
+    def test_server_to_server_transition_restarts_with_the_new_command(self):
+        self.controller.apply(self.replica_config())
+
+        self.controller.apply(self.master_config())
+
+        self.assertEqual(self.store.read_command(),
+                         llama_server_command(self.master_config()))
+        self.assertEqual(self.units.calls.count(("stop", SERVER_UNIT)), 2)
 
 
 class RollbackTest(ModeControllerTestBase):

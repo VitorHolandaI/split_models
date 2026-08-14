@@ -13,9 +13,11 @@ split-llama. Sao motores diferentes e comandos diferentes.
 O tty1 anexa a sessao tmux "split-models". Painel esquerdo: logs das unidades.
 Painel direito: btop. Ctrl-b + setas alterna. O painel esquerdo so segue os
 logs: worker e servidor sao supervisionados pelo systemd
-(split-llama-worker.service, split-llama-server.service), nao pelo tmux.
+(split-llama-worker.service, split-llama-server.service), nao pelo tmux. O
+split-llama-fleet-discovery.service permanece ativo em todos os papeis.
 
 PAPEIS (TROCA SEM REBOOT)
+  split-llama become_master
   split-llama mode status
   split-llama mode worker
   split-llama mode idle
@@ -34,6 +36,7 @@ AJUDA COMPLETA
   split-llama nodes --help
   split-llama master --help
   split-llama mode --help
+  split-llama fleet --help
 
 MODELOS
   Qualquer repositorio GGUF serve, nao so os Qwen. `split-llama exemplos`
@@ -55,9 +58,14 @@ DESCOBRIR WORKERS
   split-llama nodes
   split-llama nodes --broadcast <broadcast-da-LAN>
 
+DESCOBRIR TODA A FROTA (INCLUSIVE REPLICAS E MASTERS)
+  split-llama fleet nodes
+  split-llama fleet nodes --broadcast-address <broadcast-da-LAN>
+
 UNIDADES SUPERVISIONADAS
   systemctl status split-llama-worker.service
   systemctl status split-llama-server.service
+  systemctl status split-llama-fleet-discovery.service
   journalctl -fu split-llama-worker.service
 
 CONFERIR DISPOSITIVOS

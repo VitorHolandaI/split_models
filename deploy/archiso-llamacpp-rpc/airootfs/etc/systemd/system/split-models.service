@@ -3,7 +3,7 @@
 # multi-user.target.wants, para reaproveitar o enable que lib_archiso_build.sh
 # ja cria. So o ExecStart muda, apontando para a sessao do llama.cpp.
 Description=Split Models llama.cpp RPC worker session (experimental)
-Wants=network-online.target
+Wants=network-online.target split-llama-fleet-discovery.service
 After=network-online.target
 
 [Service]

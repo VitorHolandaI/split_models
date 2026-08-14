@@ -1,11 +1,11 @@
 """Locked mode transitions with readiness, cleanup, and rollback to worker.
 
-The sequence follows plan.md: stop the worker unit (which also stops the UDP
-announcement, since discovery lives in the worker process), wait for the RPC
-port to close, record the effective command, start the server unit, wait for
-`GET /health`, and only then record the new mode. Any failure cleans state and
-restores `worker`, so a node never ends up role-less or with a dead server
-holding a full model in RAM.
+The sequence stops the worker unit and its RPC-only announcement, waits for the
+RPC port to close, restarts the server with its new command, waits for
+`GET /health`, and only then records the mode. The separate fleet discovery
+service remains active throughout. Any failure cleans state and restores
+`worker`, so a node never ends up role-less or with a dead server holding a
+full model in RAM.
 """
 
 from __future__ import annotations
@@ -94,6 +94,10 @@ class ModeController:
             self._units.stop(WORKER_UNIT)
             stage = "worker.port-close"
             self._wait_worker_port_closed()
+            # `systemctl start` nao reinicia um servidor ja ativo. Parar aqui
+            # garante que replica -> distributed-master aplique o novo argv.
+            stage = "server.stop"
+            self._units.stop(SERVER_UNIT)
             stage = "server.prepare"
             if not keep_cache:
                 self._clear_model_cache()

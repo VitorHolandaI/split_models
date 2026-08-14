@@ -328,6 +328,17 @@ class ConfigureReplicasTest(FleetCoordinatorTestBase):
         self.assertEqual(params["haproxy_file"],
                          str(self.run_dir / "haproxy.cfg"))
 
+    def test_haproxy_can_listen_away_from_replica_port(self):
+        coordinator = self.coordinator(self.replicas())
+
+        coordinator.configure_replicas(
+            ("r1", "r2"), "small", port=8080,
+            haproxy_port=8088, haproxy_path=self.run_dir / "haproxy.cfg")
+
+        config = (self.run_dir / "haproxy.cfg").read_text(encoding="utf-8")
+        self.assertIn("bind *:8088", config)
+        self.assertIn("10.0.0.2:8080", config)
+
     def test_replica_health_timeout_names_the_node(self):
         coordinator = self.coordinator(self.replicas())
         self.health = FakeHealthProbe(ready=False)

@@ -3,8 +3,8 @@
 ## Visão geral
 
 Máquinas bootam a ISO, se enxergam na mesma LAN. Uma delas coordena o
-benchmark, as outras viram nós de inferência. O worker RPC já sobe
-automaticamente no boot da ISO — não precisa iniciar nada.
+benchmark, as outras viram nós de inferência. O worker RPC e o discovery de
+controle já sobem automaticamente no boot da ISO — não precisa iniciar nada.
 
 Para usar numa máquina que já tem o repositório clonado (sem ISO),
 basta rodar o worker manualmente:
@@ -13,31 +13,28 @@ basta rodar o worker manualmente:
 split-llama worker --bind 192.168.0.10
 ```
 
-> **Importante (discovery):** o worker do boot da ISO anuncia o IP da
-> rota padrão (o NAT, ex: 10.0.2.15), que não serve para as outras
-> máquinas acharem. Para o discovery reportar o IP da LAN, suba o
-> worker com `--bind <ip-da-lan>` (ou config a rota padrão na LAN).
-> Sem isso o `fleet bench --auto-discover` só acha o nó local.
+Há dois discoveries intencionalmente separados:
+
+- `split-llama nodes`: lista somente workers RPC realmente disponíveis;
+- `split-llama fleet nodes`: lista todos os nós pelo plano de controle,
+  inclusive réplicas e masters.
+
+O segundo permanece ativo durante todas as trocas de modo e é usado por
+`fleet bench --auto-discover` e `fleet reboot`.
 
 ## Fluxo rápido (copiar/colar)
 
-> **Onde roda cada comando:** as máquinas do lab bootam a ISO e NÃO têm o
-> repositório. O `split-llama` existe nelas em `/usr/local/bin/split-llama`,
-> mas a chave privada da frota **não** está na ISO (gitignored). Então:
-> - Passo 0: roda **na sua máquina** (que tem o repo clonado)
-> - Passos 1-4: rodam **dentro de qualquer máquina do lab** (via SSH ou console)
+> **Onde roda cada comando:** escolha uma máquina do lab como coordenadora e
+> execute os comandos nela. A chave dedicada já é embutida na ISO durante o
+> build e recebe modo `0600`; quem possui a ISO controla a frota, portanto use
+> somente numa LAN isolada.
 
 ```bash
-# 0. NA SUA MÁQUINA (tem o repo): copia a chave privada para cada nó, uma vez
-#    (as ISOs já têm a pública em authorized_keys, então o scp autentica)
-scp -i deploy/keys/split-models-appliance deploy/keys/split-models-appliance \
-  root@192.168.0.10:/root/.ssh/fleet_ed25519
-scp -i deploy/keys/split-models-appliance deploy/keys/split-models-appliance \
-  root@192.168.0.20:/root/.ssh/fleet_ed25519
+# 0. Na máquina escolhida, para inferência local mas mantém o UDP de controle
+split-llama become_master
 
-# 1. DENTRO DE UM NÓ (via ssh -i deploy/keys/split-models-appliance root@192.168.0.10):
-#    confere se os workers aparecem (todos devem listar)
-split-llama nodes --broadcast 192.168.0.255 --timeout 5
+# 1. Confere todos os nós e seus modos atuais
+split-llama fleet nodes --broadcast-address 192.168.0.255
 
 # 2. Bench automático — réplica + HAProxy (testado com 3 nós)
 split-llama fleet bench \
@@ -70,8 +67,8 @@ máquina, some no reboot; copie os arquivos antes de desligar).
 - ISO construída: `dist/llamacpp-rpc/split-models-llamacpp-rpc-*.iso`
 - Ambos os nós na mesma LAN (mesmo switch / segmento L2)
 - HAProxy instalado no nó coordenador (`pacman -S haproxy`)
-- Chave SSH da frota em `~/.ssh/fleet_ed25519` nos nós
-  (a ISO já tem a pública em `authorized_keys`)
+- Chave SSH da frota em `/root/.ssh/fleet_ed25519` com modo `0600`
+  (embutida no build da ISO; a pública fica em `authorized_keys`)
 
 ## SSH nos nós
 
@@ -89,20 +86,18 @@ cp deploy/keys/split-models-appliance ~/.ssh/
 ssh -i ~/.ssh/split-models-appliance root@192.168.0.10
 ```
 
-Para o `fleet` funcionar **de dentro de um nó**, a chave precisa estar no
-caminho padrão `/root/.ssh/fleet_ed25519` nesse nó. A ISO NÃO inclui a
-chave privada (só a pública em `authorized_keys`) — copie uma vez por
-máquina, da sua máquina:
+Para o `fleet` funcionar de dentro de um nó, a chave fica no caminho padrão
+`/root/.ssh/fleet_ed25519`. Em uma ISO antiga que mostre `Permissions ... are
+too open`, corrija temporariamente:
 
 ```bash
-scp -i deploy/keys/split-models-appliance deploy/keys/split-models-appliance \
-  root@192.168.0.10:/root/.ssh/fleet_ed25519
+chmod 600 /root/.ssh/fleet_ed25519
 ```
 
 ## Reiniciar todos os nós
 
 ```bash
-# Descobre via UDP broadcast e manda reboot em todos
+# Descobre todos pelo UDP de controle e manda reboot, mesmo em modo réplica
 split-llama fleet reboot
 
 # Ou com broadcast específico da rede
@@ -114,11 +109,11 @@ split-llama fleet reboot --broadcast-address 192.168.0.255
 Entre na máquina que será o coordenador (console, SSH, físico). Lá:
 
 ```bash
-# 1. Descobre os workers na rede (UDP broadcast)
-split-llama nodes
+# 1. Descobre todos os nós e seus modos no plano de controle
+split-llama fleet nodes
 
-# 2. Para o worker que subiu automático no boot da ISO
-systemctl stop split-llama-worker.service
+# 2. Prepara a máquina coordenadora sem matar seu discovery
+split-llama become_master
 
 # 3. Escolhe o modo:
 
@@ -134,8 +129,8 @@ split-llama mode distributed-master \
 split-llama bench-capacity --profile users-2k \
   --scenario replicated --endpoint http://127.0.0.1:8080
 
-# 5. Para voltar ao worker depois
-systemctl start split-llama-worker.service
+# 5. Para voltar ao worker depois (transição supervisionada)
+split-llama mode worker
 ```
 
 Para HAProxy (cenário réplica com várias máquinas), gere o `haproxy.cfg`
@@ -183,10 +178,11 @@ split-llama fleet bench \
 ```
 
 O que ele faz automaticamente:
-1. Escuta UDP broadcast por 10s → descobre os IPs dos workers
-2. SSH em cada nó → para o worker e promove a `replica` ou `distributed-master`
-3. Gera `haproxy.cfg` apontando para todas as réplicas
-4. Sobe o HAProxy na porta 8080
+1. Escuta o UDP de controle por 10s e descobre nós em qualquer modo
+2. SSH em cada nó e executa `split-llama mode worker` para limpar o papel anterior
+3. Em replicated, promove todos a réplica; em distributed, promove somente um
+   master e mantém os demais como workers RPC
+4. Gera `haproxy.cfg` e sobe o HAProxy local na porta 8088
 5. Aguarda `/health` 200 em todos os nós
 6. Executa `bench-capacity` contra o endpoint
 7. Salva resultado em `benchmark-results/capacity-summary.csv`

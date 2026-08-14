@@ -15,4 +15,7 @@ file_permissions+=(
   ["/usr/local/bin/split-llama-model-cache"]="0:0:755"
   ["/usr/local/bin/split-llama-session"]="0:0:755"
   ["/usr/local/bin/split-llama-tmux"]="0:0:755"
+  # O ssh recusa chave privada com modo frouxo (too open): o mkarchiso nao
+  # preserva o 600 do install; o profiledef precisa reaplicar explicitamente.
+  ["/root/.ssh/fleet_ed25519"]="0:0:600"
 )

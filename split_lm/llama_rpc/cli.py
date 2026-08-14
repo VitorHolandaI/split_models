@@ -38,8 +38,11 @@ from .discovery import (
     DISCOVERY_PORT, RPC_PORT, RpcWorker, discover_workers, local_worker,
     rpc_endpoints)
 from .fleet_coordinator import FleetCoordinator, FleetError
+from .fleet_discovery import (
+    FLEET_DISCOVERY_PORT, FleetNode, discover_fleet_nodes,
+    serve_fleet_discovery)
 from .fleet_inventory import InventoryError, NodeInventory
-from .fleet_ssh import FLEET_KEY, SshError, SshKeyRunner
+from .fleet_ssh import FLEET_KEY, SshError, SshKeyRunner, SshRunner
 from .health import TcpPortProbe
 from .master import DEFAULT_GGUF_REPO, list_devices_command, llama_cli_command
 from .mode_state import (
@@ -163,10 +166,26 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="status em uma linha, para a barra do tmux")
     _add_runtime_arguments(mode)
 
+    become_master = commands.add_parser(
+        "become_master",
+        help="para inferencia local e prepara este no como coordenador/master")
+    become_master.add_argument("--health-timeout", type=float, default=900.0,
+                               help="timeout do controlador de modo")
+    _add_runtime_arguments(become_master)
+
     serve = commands.add_parser(
         "serve", help="executa o comando efetivo gravado (uso da unidade "
                       "split-llama-server.service)")
     _add_runtime_arguments(serve)
+
+    fleet_agent = commands.add_parser(
+        "fleet-agent", help="anuncia este no para controle em qualquer modo")
+    fleet_agent.add_argument("--node-id", default=f"node-{socket.gethostname()}",
+                             help="identificador estavel deste no")
+    fleet_agent.add_argument("--discovery-port", type=int,
+                             default=FLEET_DISCOVERY_PORT,
+                             help="porta UDP do plano de controle")
+    _add_runtime_arguments(fleet_agent)
 
     fleet = commands.add_parser(
         "fleet", help="coordena a frota por SSH por chave",
@@ -182,6 +201,16 @@ def _build_parser() -> argparse.ArgumentParser:
     fleet.add_argument("--rpc-port", type=int, default=RPC_PORT,
                        help="porta RPC dos workers")
     fleet_sub = fleet.add_subparsers(dest="fleet_command", required=True)
+
+    fleet_nodes = fleet_sub.add_parser(
+        "nodes", help="lista todos os nos pelo discovery de controle")
+    fleet_nodes.add_argument("--broadcast-address", default="255.255.255.255",
+                             help="endereco de broadcast para discovery")
+    fleet_nodes.add_argument("--discovery-timeout", type=float, default=5.0,
+                             help="segundos escutando respostas de discovery")
+    fleet_nodes.add_argument("--discovery-port", type=int,
+                             default=FLEET_DISCOVERY_PORT,
+                             help="porta UDP do plano de controle")
 
     inventory = fleet_sub.add_parser(
         "inventory", help="coleta o inventario exato dos nos")
@@ -228,6 +257,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="endereco de broadcast para discovery")
     reboot.add_argument("--discovery-timeout", type=float, default=10.0,
                         help="segundos escutando respostas de discovery")
+    reboot.add_argument("--discovery-port", type=int,
+                        default=FLEET_DISCOVERY_PORT,
+                        help="porta UDP do plano de controle")
 
     bench = fleet_sub.add_parser(
         "bench", help="inventario + promocao + HAProxy + bench-capacity em um comando")
@@ -248,6 +280,8 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="slots/sequencias vivas do llama-server")
     bench.add_argument("--port", type=int, default=8080,
                        help="porta HTTP dos servidores inferencia")
+    bench.add_argument("--haproxy-port", type=int, default=8088,
+                       help="porta local do HAProxy no cenario replicated")
     bench.add_argument("--output-dir", type=Path, default=Path("benchmark-results"),
                        help="onde gravar requests.jsonl e summary.csv")
     bench.add_argument("--auto-discover", action="store_true",
@@ -256,6 +290,9 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="endereco de broadcast para discovery")
     bench.add_argument("--discovery-timeout", type=float, default=10.0,
                        help="segundos escutando respostas de discovery")
+    bench.add_argument("--discovery-port", type=int,
+                       default=FLEET_DISCOVERY_PORT,
+                       help="porta UDP do plano de controle")
     bench.add_argument("--health-timeout", type=float, default=900.0,
                        help="segundos esperando GET /health")
 
@@ -435,6 +472,17 @@ def run_mode(options: argparse.Namespace) -> int:
     return 0
 
 
+def run_become_master(options: argparse.Namespace) -> int:
+    """Stop local inference roles while leaving fleet discovery available."""
+    try:
+        _mode_controller(options).apply(ModeConfig(Mode.IDLE))
+    except (ModeLockedError, ModeTransitionError, UnitCommandError) as error:
+        log.error("%s", error)
+        return 1
+    log.info("no pronto como coordenador; discovery UDP de controle permanece ativo")
+    return 0
+
+
 def run_serve(options: argparse.Namespace) -> int:
     """Exec the recorded effective command; the server unit's only job.
 
@@ -453,6 +501,13 @@ def run_serve(options: argparse.Namespace) -> int:
         log.error("exec %s: %s", argv[0], error)
         return 1
     return 0  # inalcancavel: execvp substitui o processo
+
+
+def run_fleet_agent(options: argparse.Namespace) -> int:
+    """Advertise this node for fleet control independently of its RPC role."""
+    serve_fleet_discovery(options.node_id, StateStore(options.runtime_dir),
+                          port=options.discovery_port)
+    return 0
 
 
 def _split_hosts(specification: str) -> tuple[str, ...]:
@@ -478,6 +533,16 @@ def format_inventory(nodes: tuple[NodeInventory, ...]) -> str:
     return "\n".join([_INVENTORY_HEADER, *rows])
 
 
+def format_fleet_nodes(nodes: tuple[FleetNode, ...]) -> str:
+    """Render always-on control nodes and their current inference modes."""
+    if not nodes:
+        return "nenhum no respondeu ao discovery de controle"
+    header = f"{'NODE':<20} {'HOSTNAME':<20} {'IP':<16} MODE"
+    rows = [f"{node.node_id:<20} {node.hostname:<20} "
+            f"{node.address:<16} {node.mode}" for node in nodes]
+    return "\n".join([header, *rows])
+
+
 def run_fleet(options: argparse.Namespace) -> int:
     """Drive one fleet scenario over SSH and report the run artifacts."""
     coordinator = FleetCoordinator(
@@ -491,6 +556,8 @@ def run_fleet(options: argparse.Namespace) -> int:
             print(format_inventory(nodes))
             print(f"inventario: {inventory_path}")
             return 0
+        if options.fleet_command == "nodes":
+            return _run_fleet_nodes(options)
         if options.fleet_command == "distributed":
             result = coordinator.promote_master(
                 options.master, _split_hosts(options.workers), options.model,
@@ -536,15 +603,23 @@ def _resolve_fleet_key() -> str:
     return FLEET_KEY
 
 
+def _run_fleet_nodes(options: argparse.Namespace) -> int:
+    nodes = discover_fleet_nodes(options.discovery_port,
+                                 options.discovery_timeout,
+                                 options.broadcast_address)
+    print(format_fleet_nodes(nodes))
+    return 0 if nodes else 1
+
+
 def _run_fleet_reboot(coordinator: FleetCoordinator,
                       options: argparse.Namespace) -> int:
-    """Discover every node and reboot it over SSH."""
-    from .discovery import discover_workers
+    """Discover every control agent and reboot it over SSH."""
     from .fleet_ssh import SshKeyRunner
 
-    found = discover_workers(timeout=options.discovery_timeout,
-                             broadcast_address=options.broadcast_address)
-    nodes = tuple(w.address for w in found)
+    found = discover_fleet_nodes(options.discovery_port,
+                                 options.discovery_timeout,
+                                 options.broadcast_address)
+    nodes = tuple(node.address for node in found)
     if not nodes:
         log.error("nenhum no descoberto via UDP broadcast em %ss",
                   options.discovery_timeout)
@@ -561,60 +636,76 @@ def _run_fleet_reboot(coordinator: FleetCoordinator,
     return 0
 
 
+def _return_all_to_worker(runner: SshRunner,
+                          nodes: tuple[str, ...]) -> None:
+    for node in nodes:
+        log.info("%s: voltando a worker", node)
+        runner.run(node, ["split-llama", "mode", "worker"])
+
+
+def _configure_distributed(runner: SshRunner, nodes: tuple[str, ...],
+                           options: argparse.Namespace) -> str:
+    if len(nodes) < 2:
+        raise FleetError(
+            f"nodes={nodes!r}; cenario distributed espera master e worker")
+    local = lan_address()
+    master = options.master or (local if local in nodes else nodes[0])
+    if master not in nodes:
+        raise FleetError(
+            f"master={master!r}; esperado um dos nos descobertos {nodes!r}")
+    _return_all_to_worker(runner, nodes)
+    workers = tuple(node for node in nodes if node != master)
+    rpc = ",".join(f"{node}:{options.rpc_port}" for node in workers)
+    runner.run(master, [
+        "split-llama", "mode", "distributed-master",
+        "--model", options.model, "--rpc", rpc,
+        "--parallel", str(options.parallel), "--port", str(options.port)])
+    return f"http://{master}:{options.port}"
+
+
+def _start_replicated(runner: SshRunner, nodes: tuple[str, ...],
+                      options: argparse.Namespace) -> tuple[str, subprocess.Popen[bytes]]:
+    from .haproxy import haproxy_config
+
+    _return_all_to_worker(runner, nodes)
+    for node in nodes:
+        runner.run(node, [
+            "split-llama", "mode", "replica", "--model", options.model,
+            "--parallel", str(options.parallel), "--port", str(options.port)])
+    servers = tuple((f"node-{index}", f"{host}:{options.port}")
+                    for index, host in enumerate(nodes))
+    haproxy_path = options.output_dir.resolve() / "haproxy.cfg"
+    haproxy_path.parent.mkdir(parents=True, exist_ok=True)
+    haproxy_path.write_text(
+        haproxy_config(servers, options.haproxy_port), encoding="utf-8")
+    proxy = subprocess.Popen(["haproxy", "-f", str(haproxy_path)],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    return f"http://127.0.0.1:{options.haproxy_port}", proxy
+
+
 def _run_fleet_bench(coordinator: FleetCoordinator,
                      options: argparse.Namespace) -> int:
     """Inventory -> promote -> HAProxy -> bench-capacity -> cleanup."""
-    from .discovery import discover_workers
     from .fleet_ssh import SshKeyRunner
     from .health import HttpHealthProbe, wait_until
-    from .mode_state import Mode, ModeConfig, MODEL_PROFILES
 
     if options.auto_discover:
-        found = discover_workers(timeout=options.discovery_timeout,
-                                 broadcast_address=options.broadcast_address)
-        nodes = tuple(w.address for w in found)
+        found = discover_fleet_nodes(options.discovery_port,
+                                     options.discovery_timeout,
+                                     options.broadcast_address)
+        nodes = tuple(node.address for node in found)
         if not nodes:
-            log.error("nenhum no descoberto via UDP broadcast em %ss",
+            log.error("nenhum no descoberto via UDP de controle em %ss",
                       options.discovery_timeout)
             return 1
         log.info("descobertos: %s", nodes)
         runner = SshKeyRunner(_resolve_fleet_key(), user="root")
-        for node in nodes:
-            log.info("promovendo %s a %s", node, options.scenario)
-            runner.run(node, ["systemctl", "stop", "split-llama-worker.service"])
-            if options.scenario == "distributed":
-                rpc = ",".join(f"{h}:{options.rpc_port or 50052}"
-                               for h in nodes if h != node)
-                if not rpc:
-                    log.error(
-                        "cenario distributed exige ao menos 2 nos; "
-                        "descobertos: %s", nodes)
-                    return 1
-                runner.run(node, [
-                    "split-llama", "mode", "distributed-master",
-                    "--model", options.model, "--rpc", rpc,
-                    "--parallel", str(options.parallel),
-                    "--port", str(options.port)])
-            else:
-                runner.run(node, [
-                    "split-llama", "mode", "replica",
-                    "--model", options.model,
-                    "--parallel", str(options.parallel),
-                    "--port", str(options.port)])
         if options.scenario == "replicated":
-            servers = tuple((f"node-{i}", f"{h}:{options.port}")
-                            for i, h in enumerate(nodes))
-            from .haproxy import haproxy_config
-            haproxy_path = options.output_dir.resolve() / "haproxy.cfg"
-            haproxy_path.parent.mkdir(parents=True, exist_ok=True)
-            haproxy_path.write_text(haproxy_config(servers, options.port))
-            proxy = subprocess.Popen(
-                ["haproxy", "-f", str(haproxy_path)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            endpoint = f"http://127.0.0.1:{options.port}"
+            endpoint, proxy = _start_replicated(runner, nodes, options)
         else:
             proxy = None
-            endpoint = f"http://{nodes[0]}:{options.port}"
+            endpoint = _configure_distributed(runner, nodes, options)
     else:
         if not options.nodes:
             log.error("informe --nodes ou --auto-discover")
@@ -632,33 +723,39 @@ def _run_fleet_bench(coordinator: FleetCoordinator,
             result = coordinator.configure_replicas(
                 nodes, options.model,
                 parallel=options.parallel, port=options.port,
-                haproxy_path=options.output_dir / "haproxy.cfg")
+                haproxy_path=options.output_dir / "haproxy.cfg",
+                haproxy_port=options.haproxy_port)
             proxy = subprocess.Popen(
                 ["haproxy", "-f", str(result.haproxy_path)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            endpoint = f"http://127.0.0.1:{options.port}"
+            endpoint = f"http://127.0.0.1:{options.haproxy_port}"
 
-    probe = HttpHealthProbe()
-    ready = wait_until(
-        lambda: probe.ready(f"{endpoint}/health"),
-        timeout=options.health_timeout)
-    if not ready:
-        log.error("%s nao ficou pronto apos %ss", endpoint, options.health_timeout)
-        return 1
+    try:
+        probe = HttpHealthProbe()
+        ready = wait_until(
+            lambda: probe.ready(f"{endpoint}/health"),
+            timeout=options.health_timeout)
+        if not ready:
+            log.error("%s nao ficou pronto apos %ss",
+                      endpoint, options.health_timeout)
+            return 1
+        bench_opts = argparse.Namespace(
+            profile=options.profile, scenario=options.scenario,
+            endpoint=[endpoint], output_dir=options.output_dir,
+            health_timeout=options.health_timeout)
+        return run_bench_capacity(bench_opts)
+    finally:
+        _stop_proxy(proxy)
 
-    bench_opts = argparse.Namespace(
-        profile=options.profile, scenario=options.scenario,
-        endpoint=[endpoint], output_dir=options.output_dir,
-        health_timeout=options.health_timeout)
-    exit_code = run_bench_capacity(bench_opts)
 
-    if proxy is not None:
-        proxy.terminate()
-        try:
-            proxy.wait(5)
-        except subprocess.TimeoutExpired:
-            proxy.kill()
-    return exit_code
+def _stop_proxy(proxy: subprocess.Popen[bytes] | None) -> None:
+    if proxy is None:
+        return
+    proxy.terminate()
+    try:
+        proxy.wait(5)
+    except subprocess.TimeoutExpired:
+        proxy.kill()
 
 
 def run_bench_capacity(options: argparse.Namespace) -> int:
@@ -710,9 +807,11 @@ def run_bench_capacity(options: argparse.Namespace) -> int:
 
 
 _COMMANDS = {"worker": run_worker, "nodes": run_nodes, "master": run_master,
-             "exemplos": run_examples, "bench": run_bench,
-             "velocidade": run_speed, "mode": run_mode, "serve": run_serve,
-             "fleet": run_fleet, "bench-capacity": run_bench_capacity}
+              "exemplos": run_examples, "bench": run_bench,
+              "velocidade": run_speed, "mode": run_mode,
+              "become_master": run_become_master, "serve": run_serve,
+              "fleet-agent": run_fleet_agent,
+              "fleet": run_fleet, "bench-capacity": run_bench_capacity}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

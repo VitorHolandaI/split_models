@@ -191,7 +191,8 @@ class FleetCoordinator:
     def configure_replicas(self, replica_hosts: Sequence[str],
                            model_profile: str, *,
                            parallel: int = 4, port: int = 8080,
-                           haproxy_path: Path = Path("haproxy.cfg")
+                           haproxy_path: Path = Path("haproxy.cfg"),
+                           haproxy_port: int | None = None
                            ) -> ReplicaResult:
         """Put every replica in local-server mode and write the HAProxy file.
 
@@ -217,7 +218,8 @@ class FleetCoordinator:
             self._ssh.run(node.host, argv)
         for node in nodes:
             self._wait_health(node, port)
-        self._write_haproxy(haproxy_path, nodes, port)
+        self._write_haproxy(haproxy_path, nodes, port,
+                            haproxy_port if haproxy_port is not None else port)
         run_path = self._record_run("replicated", replica_hosts, inventory_path, (
             ("model", model_profile), ("parallel", str(parallel)),
             ("port", str(port)), ("haproxy_file", str(haproxy_path))), timestamp)
@@ -333,7 +335,8 @@ class FleetCoordinator:
                 "readiness do llama-server")
 
     def _write_haproxy(self, path: Path, nodes: tuple[NodeInventory, ...],
-                       port: int) -> None:
-        servers = tuple((node.node_id, f"{node.ip}:{port}") for node in nodes)
+                       backend_port: int, listen_port: int) -> None:
+        servers = tuple((node.node_id, f"{node.ip}:{backend_port}")
+                        for node in nodes)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(haproxy_config(servers, port), encoding="utf-8")
+        path.write_text(haproxy_config(servers, listen_port), encoding="utf-8")
