@@ -585,6 +585,11 @@ def _run_fleet_bench(coordinator: FleetCoordinator,
             if options.scenario == "distributed":
                 rpc = ",".join(f"{h}:{options.rpc_port or 50052}"
                                for h in nodes if h != node)
+                if not rpc:
+                    log.error(
+                        "cenario distributed exige ao menos 2 nos; "
+                        "descobertos: %s", nodes)
+                    return 1
                 runner.run(node, [
                     "split-llama", "mode", "distributed-master",
                     "--model", options.model, "--rpc", rpc,
