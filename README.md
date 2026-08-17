@@ -1,25 +1,139 @@
 # Split Models
 
-Vertical layer splitting for CPU inference across trusted LAN machines.
+Distributed LLM inference across trusted LAN machines, in two independent
+engines:
 
-The complete wire protocol, startup sequence, per-machine payloads and failure
-behavior are documented in [`docs/protocol.md`](docs/protocol.md).
+- **llama.cpp RPC appliance** (`split-llama`) — the current focus: a stateless
+  Arch ISO that boots into a fleet of inference nodes with one-command
+  orchestration, model splitting over RPC, and load-balanced replication.
+- **PyTorch vertical split** (`split-cluster`) — the original research engine:
+  layers of a model split across machines over a custom control protocol.
 
-Run `split-cluster exemplos` or `split-cluster --comandos-exemplos` to print
-runnable commands for the default model and every configured benchmark profile.
+Both engines share the same philosophy: no shared storage, no orchestration
+daemon, everything discoverable over UDP broadcast on a trusted LAN.
 
-## Worker Agent
+> **Security:** the RPC backend has no authentication or encryption. Anyone
+> who reaches the ports runs code on your nodes. Use only on an isolated LAN.
 
-Each worker discovers itself with a random ID and waits for validated jobs:
+---
+
+## 1. llama.cpp appliance (`split-llama`)
+
+Boot the ISO on N machines and one command runs a fleet benchmark:
+
+```bash
+split-llama fleet bench \
+  --scenario replicated \
+  --model small \
+  --profile users-2k \
+  --auto-discover
+```
+
+The ISO embeds everything: llama.cpp binaries, the Python controller, the
+fleet SSH key (mode `0600`), and HAProxy.
+
+### Modes (no reboot needed)
+
+Each node can switch role at runtime via `split-llama mode`:
+
+| Mode | What the node does |
+|---|---|
+| `worker` | Runs `ggml-rpc-server`, advertises over UDP, holds layers |
+| `replica` | Runs a full local `llama-server` (same model, whole node) |
+| `distributed-master` | One `llama-server` spanning the fleet via RPC layers |
+| `idle` | No inference; still reachable for fleet control |
+
+```bash
+split-llama mode status
+split-llama mode replica --model small
+split-llama mode distributed-master --model small --rpc 192.168.0.11:50052,192.168.0.12:50052
+split-llama mode worker
+```
+
+Transitions are supervised: locked, health-checked, and rolled back to
+`worker` on failure.
+
+### Always-on fleet control
+
+Discovery for control is separate from RPC discovery, so nodes stay
+reachable in every mode:
+
+```bash
+split-llama nodes              # only live RPC workers
+split-llama fleet nodes        # every node + current mode (replicas, masters, idle)
+```
+
+### Fleet commands (one coordinator node, no manual IPs)
+
+```bash
+split-llama become_master      # stop local inference, keep control plane
+
+split-llama fleet bench \
+  --scenario replicated --model small --profile users-2k --auto-discover
+
+split-llama fleet bench \
+  --scenario distributed --model small --profile users-2k --auto-discover
+
+split-llama fleet reboot       # reboot every discovered node
+```
+
+What `fleet bench --auto-discover` does automatically:
+
+1. Discover every node over the always-on control UDP.
+2. Return all nodes to `worker` (supervised cleanup of the previous role).
+3. `replicated`: promote all to replicas, start local HAProxy (round-robin,
+   active `/health` checks, SSE tunnel timeout).
+4. `distributed`: promote exactly one master with the others as RPC workers
+   (layer split).
+5. Run the capacity profile and write `benchmark-results/capacity-summary.csv`.
+
+Scenarios can switch in any order — `replicated` to `distributed` and back —
+without rebooting or typing IPs.
+
+### Building the ISO
+
+Requires Arch Linux packages: `cmake`, `shaderc`, `glslc`, `vulkan-headers`,
+`spirv-headers`, `openssl`, plus the `archiso` tooling:
+
+```bash
+./deploy/build_llamacpp_archiso.sh
+```
+
+Output: `dist/llamacpp-rpc/split-models-llamacpp-rpc-<date>-x86_64.iso`.
+
+The build is pinned to a single llama.cpp commit (`deploy/llama-version.env`)
+so RPC protocol versions always match across the fleet. When `glslc` changes,
+the build invalidates the Vulkan shader cache automatically.
+
+Test the ISO locally with 3 QEMU/KVM VMs:
+
+```bash
+SPLIT_VM_MEMORY_MB=2048 ./deploy/run_test_vm.sh 1 dist/llamacpp-rpc/*.iso
+SPLIT_VM_MEMORY_MB=2048 ./deploy/run_test_vm.sh 2 dist/llamacpp-rpc/*.iso
+SPLIT_VM_MEMORY_MB=2048 ./deploy/run_test_vm.sh 3 dist/llamacpp-rpc/*.iso
+```
+
+The full operational guide lives in
+[`README-FLEET-BENCH.md`](README-FLEET-BENCH.md).
+
+---
+
+## 2. PyTorch vertical split (`split-cluster`)
+
+Layer-wise splitting for CPU inference across trusted machines. The complete
+wire protocol, startup sequence and failure behavior are documented in
+[`docs/protocol.md`](docs/protocol.md).
+
+### Worker
 
 ```bash
 uv run split-cluster worker
 ```
 
-The worker listens on `29500/udp` for discovery, `29510/tcp` for control, and
-`9999/tcp` while an inference job is active.
+Listens on `29500/udp` (discovery), `29510/tcp` (control) and `9999/tcp`
+while a job is active.
 
-## Interactive Master
+### Interactive master
 
 ```bash
 uv run split-cluster master \
@@ -29,15 +143,14 @@ uv run split-cluster master \
   --model Qwen/Qwen2.5-0.5B-Instruct
 ```
 
-Every answer ends with:
+Every answer ends with a metrics line and appends to
+`benchmark-results/generation.jsonl`:
 
 ```text
 METRICS split | prompt=128 tokens | generated=50 | total=4.000s | tok/s=12.50 | TTFT=500.0ms | avg_inter_token=71.4ms
 ```
 
-Records are appended to `benchmark-results/generation.jsonl`.
-
-## Local Baseline
+### Local baseline
 
 ```bash
 uv run python tools/benchmark_single_model.py \
@@ -46,108 +159,47 @@ uv run python tools/benchmark_single_model.py \
   --ignore-eos
 ```
 
-The local and split commands write the same JSONL schema with different
-`mode` values.
+Local and split runs write the same JSONL schema, distinguished by `mode`.
 
-## Context Sweep
+### Benchmark profiles
 
-For two machines with a 5 GiB application budget each, use the already tested
-`Qwen/Qwen2.5-3B-Instruct`. Its BF16 checkpoint is approximately 6.17 GB and
-has 36 layers. The split loader preserves BF16 instead of expanding weights to
-FP32.
-
-Start conservatively:
-
-```bash
-uv run split-cluster master \
-  --discover \
-  --broadcast 192.168.0.255 \
-  --head-address 192.168.0.7 \
-  --model Qwen/Qwen2.5-3B-Instruct \
-  --max-new-tokens 16 \
-  --context-sizes 128,256,512,1024,2048
-```
-
-Each completed point updates:
-
-```text
-benchmark-results/generation.jsonl
-benchmark-results/context-sweep.csv
-benchmark-results/context-sweep.svg
-```
-
-The sweep uses exact input-token counts, resets KV cache between points, keeps
-the model loaded, and ignores EOS so every point generates the same number of
-tokens. Add `4096` and `8192` only after checking memory use.
-
-## Benchmark Profiles
-
-Named profiles live in `benchmarks.toml`. List them with:
+Named profiles live in `benchmarks.toml`:
 
 ```bash
 uv run split-cluster benchmarks
-```
-
-Run the exact same profile locally:
-
-```bash
-uv run split-cluster benchmark-local \
-  --benchmark-profile context-quick
-```
-
-Then run it through the vertical cluster:
-
-```bash
+uv run split-cluster benchmark-local --benchmark-profile context-quick
 uv run split-cluster master \
-  --discover \
-  --broadcast 192.168.0.255 \
-  --head-address 192.168.0.7 \
+  --discover --broadcast 192.168.0.255 --head-address 192.168.0.7 \
   --benchmark-profile context-quick
 ```
 
-Profiles define the model, exact contexts, generated-token count, warmup runs,
-precision, JSONL history, and graph prefix. Warmups are not written to the
-result files.
-
-## INT8 And INT4
-
-Quantized CPU profiles use optional TorchAO weight-only quantization. Install
-the extra on every participating machine:
+Optional TorchAO INT8/INT4 weight-only quantization:
 
 ```bash
 uv sync --extra quant
 ```
 
-The optional dependency is pinned to the validated TorchAO `0.17.x` API.
+Profiles: `context-quick`, `context-quick-int8`, `context-quick-int4`,
+`context-realistic`, `poem-realistic`.
 
-Available profiles include:
+---
 
-```text
-context-quick-int8
-context-quick-int4
-```
-
-For a more realistic response length, use `context-realistic`. It generates
-128 tokens per context; `context-quick` remains the short 16-token regression
-for quickly comparing TTFT after code changes.
-
-The `context-*` profiles use exact synthetic repeated-token inputs to isolate
-context scaling. For natural model behavior, use `poem-realistic`; it sends the
-same chat-template poem request to the local model and the split cluster:
+## Development
 
 ```bash
-uv run split-cluster benchmark-local --benchmark-profile poem-realistic
+uv sync --extra plots
+uv run --extra plots python -m unittest discover -s tests
 ```
 
-```bash
-uv run split-cluster master \
-  --discover \
-  --broadcast 192.168.0.255 \
-  --head-address 192.168.0.7 \
-  --benchmark-profile poem-realistic
-```
+The suite covers both engines: fleet coordination, mode transitions, HAProxy
+generation, capacity profiles, discovery protocols, ISO staging, and the
+PyTorch split cluster — all against named fakes, no network or hardware
+required.
 
-The loader first loads each slice in BF16 and then quantizes that slice. Peak
-loading memory can therefore exceed steady-state quantized memory. Hidden
-states and KV cache remain BF16. INT8/INT4 reduce weight memory but are not
-guaranteed to improve CPU latency; compare output quality and measured timing.
+## Documentation
+
+- `README-FLEET-BENCH.md` — operator manual for the llama.cpp appliance
+- `docs/protocol.md` — PyTorch split cluster wire protocol
+- `docs/heterogeneous-split.md` — heterogeneous worker memory planning
+- `docs/memory-bandwidth-roof.md` — CPU inference performance model
+- `docs/deployment-memory.md` — RAM budgets for the appliance
