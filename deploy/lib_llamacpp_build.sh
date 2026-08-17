@@ -19,6 +19,7 @@ llama_cache="$build_root/llamacpp-src"
 llama_tree="$llama_cache/llama.cpp-$LLAMA_TAG"
 llama_tarball="$llama_cache/llama.cpp-$LLAMA_TAG.tar.gz"
 llama_destdir="$llama_cache/dest-$LLAMA_TAG"
+vulkan_toolchain_stamp="$llama_tree/build/.split-models-glslc-version"
 
 # GGML_RPC_RDMA=OFF e obrigatorio, nao preferencia. ggml/src/ggml-rpc/
 # CMakeLists.txt:12-22 procura libibverbs NO HOST DE BUILD e liga RDMA sozinho se
@@ -121,12 +122,36 @@ llama_cuda_options() {
     printf '%s\n' -DGGML_CUDA=ON
 }
 
+# Os outputs customizados do Vulkan nao dependem do executavel glslc no CMake.
+# Depois de um upgrade do shaderc, o configure habilitou E2M1/E4M3 no C++, mas
+# manteve o header de shaders antigo sem os simbolos OCP FP4. Limpar somente
+# quando a assinatura muda preserva o build incremental comum.
+vulkan_toolchain_signature() {
+    glslc --version
+}
+
+invalidate_vulkan_shader_cache() {
+    local build_dir="$llama_tree/build" current previous=""
+    [[ -f "$build_dir/CMakeCache.txt" ]] || return 0
+    current="$(vulkan_toolchain_signature)"
+    [[ -f "$vulkan_toolchain_stamp" ]] && previous="$(<"$vulkan_toolchain_stamp")"
+    [[ "$current" == "$previous" ]] && return 0
+    printf 'glslc mudou; limpando shaders Vulkan incrementais\n' >&2
+    cmake --build "$build_dir" --target clean
+}
+
+record_vulkan_toolchain_signature() {
+    vulkan_toolchain_signature > "$vulkan_toolchain_stamp"
+}
+
 build_llama_binaries() {
     local extra=()
     mapfile -t extra < <(llama_cuda_options)
     cmake -B "$llama_tree/build" -S "$llama_tree" \
         "${llama_cmake_options[@]}" ${extra[@]+"${extra[@]}"}
+    invalidate_vulkan_shader_cache
     cmake --build "$llama_tree/build" --config Release --parallel "$(nproc)"
+    record_vulkan_toolchain_signature
 }
 
 # ggml-rpc-server e o binario cuja ausencia nao aparece no build: compila e

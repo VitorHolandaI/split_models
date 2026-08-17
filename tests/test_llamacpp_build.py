@@ -124,6 +124,43 @@ class LlamaBuildOptionsTest(unittest.TestCase):
         self.assertIn("nao vale para a ISO", refused.stderr)
 
 
+class VulkanShaderCacheTest(unittest.TestCase):
+    def test_changed_glslc_signature_cleans_incremental_outputs(self):
+        result = run_llama_lib(
+            'llama_tree="$build_root/tree"\n'
+            'vulkan_toolchain_stamp="$llama_tree/build/toolchain"\n'
+            'mkdir -p "$llama_tree/build"\n'
+            'touch "$llama_tree/build/CMakeCache.txt"\n'
+            'printf "old\\n" > "$vulkan_toolchain_stamp"\n'
+            'glslc() { printf "new\\n"; }\n'
+            'cmake() { printf "cmake %s\\n" "$*"; }\n'
+            'invalidate_vulkan_shader_cache')
+
+        self.assertIn("--target clean", result.stdout)
+        self.assertIn("glslc mudou", result.stderr)
+
+    def test_unchanged_glslc_signature_keeps_incremental_outputs(self):
+        result = run_llama_lib(
+            'llama_tree="$build_root/tree"\n'
+            'vulkan_toolchain_stamp="$llama_tree/build/toolchain"\n'
+            'mkdir -p "$llama_tree/build"\n'
+            'touch "$llama_tree/build/CMakeCache.txt"\n'
+            'printf "same\\n" > "$vulkan_toolchain_stamp"\n'
+            'glslc() { printf "same\\n"; }\n'
+            'cmake() { printf "cmake %s\\n" "$*"; }\n'
+            'invalidate_vulkan_shader_cache')
+
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+    def test_signature_is_recorded_only_after_successful_build(self):
+        recipe = LLAMA_LIB.read_text(encoding="utf-8")
+        build = recipe.index('cmake --build "$llama_tree/build" --config Release')
+        record = recipe.index("record_vulkan_toolchain_signature", build)
+
+        self.assertLess(build, record)
+
+
 class LlamaStagingTest(unittest.TestCase):
     def test_variant_hook_is_a_noop_for_the_stable_build(self):
         archiso_lib = ARCHISO_LIB.read_text(encoding="utf-8")
