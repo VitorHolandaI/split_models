@@ -1,0 +1,14 @@
+[Unit]
+# Servidor de inferencia dos modos distributed-master e replica. Nao entra no
+# boot: quem inicia e para esta unidade e `split-llama mode`, depois de gravar
+# o comando efetivo em /run/split-models/effective-command.json.
+Description=split-llama inference server (llama-server)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Environment=LLAMA_CACHE=/run/split-models/model-cache
+ExecStartPre=/usr/local/bin/split-llama-model-cache
+ExecStart=/usr/local/bin/split-llama serve
+Restart=on-failure
+RestartSec=2

@@ -1,0 +1,16 @@
+[Unit]
+# Substitui a unidade da imagem estavel: mesmo nome e mesmo link em
+# multi-user.target.wants, para reaproveitar o enable que lib_archiso_build.sh
+# ja cria. So o ExecStart muda, apontando para a sessao do llama.cpp.
+Description=Split Models llama.cpp RPC worker session (experimental)
+Wants=network-online.target split-llama-fleet-discovery.service
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/split-llama-tmux
+ExecStop=-/usr/bin/tmux kill-session -t split-models
+
+[Install]
+WantedBy=multi-user.target

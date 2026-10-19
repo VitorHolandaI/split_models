@@ -1,0 +1,16 @@
+base
+btop
+cloud-init
+hyperv
+linux
+mkinitcpio
+mkinitcpio-archiso
+open-vm-tools
+openssh
+python
+pv
+qemu-guest-agent
+syslinux
+tmux
+uv
+virtualbox-guest-utils-nox

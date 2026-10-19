@@ -1,0 +1,4 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+exec /usr/local/bin/split-models-python -m split_lm.cluster.cli "$@"

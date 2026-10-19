@@ -1,0 +1,22 @@
+#!/usr/bin/bash
+set -u
+
+runtime_dir="${SPLIT_RUNTIME_DIR:-/run/split-models}"
+
+read_identity() {
+    local path="$runtime_dir/$1" value=""
+    [[ -r "$path" ]] && read -r value < "$path"
+    printf '%s' "${value:-unknown}"
+}
+
+detect_node_ip() {
+    local address
+    address="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '
+        NR == 1 { for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1) }')"
+    printf '%s' "${address:-unavailable}"
+}
+
+role="$(read_identity role)"
+node_id="$(read_identity node-id)"
+address="${SPLIT_NODE_IP:-$(detect_node_ip)}"
+printf 'role=%s | node=%s | ip=%s\n' "$role" "$node_id" "$address"

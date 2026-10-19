@@ -1,0 +1,18 @@
+[Unit]
+# O worker RPC passa a ser supervisionado pelo systemd, nao mais pelo painel
+# tmux: parada limpa, Restart=on-failure e readiness observavel pelo journal.
+# O anuncio UDP RPC morre junto para nunca oferecer endpoint morto. O discovery
+# de controle da frota vive em split-llama-fleet-discovery.service.
+Description=split-llama RPC worker (ggml-rpc-server)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Environment=LLAMA_CACHE=/run/split-models/rpc-cache
+ExecStartPre=/usr/bin/install -d -m 0755 /run/split-models/rpc-cache
+ExecStart=/usr/local/bin/split-llama worker --node-id node-%m
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

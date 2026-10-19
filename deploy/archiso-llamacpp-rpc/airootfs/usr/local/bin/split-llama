@@ -1,0 +1,7 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+# O controlador usa somente a stdlib. Rodar a partir do projeto torna split_lm
+# importavel sem instalar Torch e Transformers na appliance llama.cpp.
+cd /opt/split-models
+exec /usr/bin/python -m split_lm.llama_rpc.cli "$@"

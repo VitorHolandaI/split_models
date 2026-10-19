@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# saida gerada: arvore temporaria do mkarchiso, ISO final e relatorios de benchmark
+build/
+dist/
+benchmark-results/
+
+# Chave privada da appliance. Fica no diretorio para ser entregue a mao, nunca
+# no historico: commit de chave privada nao se desfaz, so se revoga trocando o
+# par e reconstruindo a ISO. A publica correspondente vai versionada, embutida
+# em deploy/archiso/airootfs/root/.ssh/authorized_keys.
+deploy/keys/*
+!deploy/keys/*.pub
+
+# pesos de modelo: grandes demais para o GitHub (limite de 100 MB por arquivo)
+*.gguf
+models/
+
+# notas locais e de agente, fora do repositorio publico
+CLAUDE.md
+ai-memory-future.md
+hand.md
+plan.md
+comand.txt
+como_rodaar_bench.md
+studies/
+.ai-memory.toml
+.claude/

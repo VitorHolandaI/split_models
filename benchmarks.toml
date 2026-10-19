@@ -1,0 +1,70 @@
+[profiles.context-quick]
+description = "Fast BF16 context regression"
+model = "Qwen/Qwen2.5-3B-Instruct"
+context_sizes = [128, 256, 512, 1024, 2048]
+max_new_tokens = 16
+warmup_runs = 1
+precision = "bfloat16"
+metrics_file = "benchmark-results/context-quick.jsonl"
+output_prefix = "benchmark-results/context-quick"
+
+[profiles.context-deep]
+description = "Long-context BF16 sweep after memory validation"
+model = "Qwen/Qwen2.5-3B-Instruct"
+context_sizes = [512, 1024, 2048, 4096, 8192]
+max_new_tokens = 32
+warmup_runs = 1
+precision = "bfloat16"
+metrics_file = "benchmark-results/context-deep.jsonl"
+output_prefix = "benchmark-results/context-deep"
+
+[profiles.context-realistic]
+description = "Realistic BF16 response length across common contexts"
+model = "Qwen/Qwen2.5-3B-Instruct"
+context_sizes = [128, 256, 512, 1024, 2048]
+max_new_tokens = 128
+warmup_runs = 1
+precision = "bfloat16"
+metrics_file = "benchmark-results/context-realistic.jsonl"
+output_prefix = "benchmark-results/context-realistic"
+
+[profiles.poem-realistic]
+description = "Natural chat-template poem generation benchmark"
+model = "Qwen/Qwen2.5-3B-Instruct"
+context_sizes = []
+prompt = "Write a thoughtful poem in English about distributed computers working together across a network."
+max_new_tokens = 128
+warmup_runs = 1
+precision = "bfloat16"
+metrics_file = "benchmark-results/poem-realistic.jsonl"
+output_prefix = "benchmark-results/poem-realistic"
+
+[profiles.decode-long]
+description = "Sustained BF16 decode at one fixed prompt size"
+model = "Qwen/Qwen2.5-3B-Instruct"
+context_sizes = [128]
+max_new_tokens = 1000
+warmup_runs = 1
+precision = "bfloat16"
+metrics_file = "benchmark-results/decode-long.jsonl"
+output_prefix = "benchmark-results/decode-long"
+
+[profiles.context-quick-int8]
+description = "INT8 weight-only context regression through TorchAO"
+model = "Qwen/Qwen2.5-3B-Instruct"
+context_sizes = [128, 256, 512, 1024, 2048]
+max_new_tokens = 16
+warmup_runs = 1
+precision = "int8"
+metrics_file = "benchmark-results/context-quick-int8.jsonl"
+output_prefix = "benchmark-results/context-quick-int8"
+
+[profiles.context-quick-int4]
+description = "INT4 weight-only context regression through TorchAO"
+model = "Qwen/Qwen2.5-3B-Instruct"
+context_sizes = [128, 256, 512, 1024, 2048]
+max_new_tokens = 16
+warmup_runs = 1
+precision = "int4"
+metrics_file = "benchmark-results/context-quick-int4.jsonl"
+output_prefix = "benchmark-results/context-quick-int4"

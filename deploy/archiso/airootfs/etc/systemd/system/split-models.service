@@ -1,0 +1,13 @@
+[Unit]
+Description=Split Models cluster worker session
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/split-models-tmux
+ExecStop=-/usr/bin/tmux kill-session -t split-models
+
+[Install]
+WantedBy=multi-user.target

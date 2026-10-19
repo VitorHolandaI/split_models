@@ -1,0 +1,16 @@
+[Unit]
+# Plano de controle separado do worker RPC: continua anunciando o no quando
+# split-llama mode troca worker por replica ou distributed-master.
+Description=split-llama always-on fleet discovery
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# %m e o machine-id gerado em cada boot. %H nao serve na live ISO porque todas
+# as maquinas iniciam com hostname "archlinux" e seriam deduplicadas como uma.
+ExecStart=/usr/local/bin/split-llama fleet-agent --node-id node-%m
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+# Acrescentado a packages.x86_64 do profile base por
+# deploy/lib_archiso_build.sh:merge_overlay_packages. A lista base continua
+# valendo; aqui so entram os pacotes da variante.
+#
+# Runtime Vulkan para a appliance universal Intel/AMD. NVIDIA fica no build
+# nativo da maquina dedicada e nao adiciona driver especifico a esta imagem.
+vulkan-icd-loader
+vulkan-intel
+vulkan-radeon
+vulkan-tools
+mesa
+# HAProxy para o nó coordenador nos cenários replicados.
+haproxy
+# Benchmark oficial da CPU; vkpeak Vulkan entra como binário upstream pinado.
+7zip

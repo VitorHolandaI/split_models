@@ -1,0 +1,74 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+# Usa o dispositivo USB ext4 selecionado pelo operador quando o master pediu
+# isso. Sem selecao, o cache fica em /run, que e tmpfs da ISO e desaparece no
+# reboot. Nenhum disco interno e formatado, montado ou usado para o modelo.
+#
+# Chamado pelo ExecStartPre da split-llama-server.service e pelo atalho
+# interativo /root/split-llama-master.sh, que nao passa pela unidade.
+
+runtime_root="${SPLIT_MODELS_RUNTIME:-/run/split-models}"
+cache="$runtime_root/model-cache"
+device_selector="$runtime_root/model-cache-device"
+
+requested_usb_ext4_device() {
+    local requested="$1" line name filesystem type parent transport
+    [[ "$requested" == /dev/* ]] || {
+        printf 'USB selecionado invalido: %s; esperado /dev/sdXN ext4\n' \
+            "$requested" >&2
+        return 1
+    }
+    line="$(lsblk -rpn -o NAME,FSTYPE,TYPE,PKNAME "$requested" 2>/dev/null)" || {
+        printf 'USB selecionado ausente: %s; esperado particao ext4\n' \
+            "$requested" >&2
+        return 1
+    }
+    read -r name filesystem type parent <<< "$line"
+    [[ "/dev/${name#/dev/}" == "$requested" && "$filesystem" == ext4 && \
+        "$type" == part && -n "$parent" ]] || {
+        printf 'USB selecionado invalido: %s; esperado particao ext4\n' \
+            "$requested" >&2
+        return 1
+    }
+    parent="/dev/${parent#/dev/}"
+    transport="$(lsblk -rno TRAN "$parent" 2>/dev/null | head -n1)"
+    [[ "$transport" == usb ]] || {
+        printf 'dispositivo %s nao e USB; esperado transporte usb\n' \
+            "$requested" >&2
+        return 1
+    }
+    printf '%s\n' "$requested"
+}
+
+mount_usb_cache() {
+    local cache="$1" device="$2" current
+    current="$(findmnt -rn -o SOURCE --mountpoint "$cache" || true)"
+    [[ "$current" == "$device" ]] && return 0
+    [[ -z "$current" ]] || umount "$cache"
+    mount -t ext4 -o rw,noatime "$device" "$cache"
+    printf 'model-cache persistente: %s em %s\n' "$device" "$cache"
+}
+
+main() {
+    local device requested current
+    install -d -m 0755 "$cache"
+    if [[ "${1:-}" == --unmount ]]; then
+        current="$(findmnt -rn -o SOURCE --mountpoint "$cache" || true)"
+        [[ -z "$current" ]] || umount "$cache"
+        return 0
+    fi
+    requested="$(cat "$device_selector" 2>/dev/null || true)"
+    if [[ -z "$requested" ]]; then
+        current="$(findmnt -rn -o SOURCE --mountpoint "$cache" || true)"
+        [[ -z "$current" ]] || umount "$cache"
+        printf 'model-cache temporario em RAM: %s\n' "$cache"
+        return 0
+    fi
+    device="$(requested_usb_ext4_device "$requested")" || exit 1
+    printf 'AVISO: cache do GGUF sera %s; a politica de um modelo apaga '\
+'downloads antigos desse USB.\n' "$device" >&2
+    mount_usb_cache "$cache" "$device"
+}
+
+main "$@"

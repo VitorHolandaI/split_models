@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Compila o llama.cpp fixado e instala numa arvore local, sem gerar ISO.
+#
+# Existe para as maquinas que nao vao bootar a appliance: clona o repositorio,
+# roda isto, e o host vira um worker RPC ou um master. E o mesmo commit e as
+# mesmas opcoes de build da imagem -- o backend RPC nao negocia versao entre
+# master e worker, entao misturar builds falha em runtime, longe da causa.
+#
+# RPC nao tem autenticacao nem criptografia. Use somente em LAN isolada.
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+build_root="${SPLIT_LLAMA_BUILD_ROOT:-$repo_root/build/llamacpp-rpc}"
+# shellcheck source=deploy/lib_llamacpp_build.sh
+source "$repo_root/deploy/lib_llamacpp_build.sh"
+
+usage() {
+    printf 'uso: %s [prefixo-de-instalacao]\n' "$0" >&2
+    printf '  padrao: %s\n\n' "$llama_destdir" >&2
+    printf 'SPLIT_LLAMA_CUDA=1 acrescenta o backend CUDA, para maquinas NVIDIA\n' >&2
+    printf 'dedicadas. Exige o toolkit (nvcc) e compila para a GPU desta maquina.\n' >&2
+    printf 'Vulkan continua no build: e o fallback se a CUDA nao carregar.\n' >&2
+}
+
+print_next_steps() {
+    local prefix="$1"
+    printf '\nBinarios em %s/usr/bin\n' "$prefix"
+    printf 'Para usar sem instalar no sistema:\n'
+    printf '  export LD_LIBRARY_PATH=%s/usr/lib\n' "$prefix"
+    printf '  export PATH=%s/usr/bin:$PATH\n\n' "$prefix"
+    printf 'Confira os dispositivos antes de servir:\n'
+    printf '  llama-cli --list-devices\n\n'
+    printf 'Se a GPU nao aparecer, falta a ICD Vulkan: vulkan-intel,\n'
+    printf 'vulkan-radeon ou nvidia-utils.\n\n'
+    printf 'Se a MESMA placa aparecer duas vezes (CUDA0 e Vulkan0), sirva so uma:\n'
+    printf '  ggml-rpc-server --host 0.0.0.0 --port 50052 --device CUDA0\n\n'
+    printf 'Servir as duas faz o master somar a memoria das duas entradas e\n'
+    printf 'acreditar que ha o dobro de VRAM, atribuindo layers demais.\n\n'
+    printf 'Worker sem GPU duplicada:\n'
+    printf '  ggml-rpc-server --host 0.0.0.0 --port 50052\n\n'
+    printf 'Master (a maquina que roda a conversa):\n'
+    printf '  llama-cli --rpc <ip-do-worker>:50052 --list-devices\n'
+}
+
+main() {
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage; exit 0; }
+    require_llama_build_commands
+    fetch_llama_source
+    build_llama_binaries
+    [[ -n "${1:-}" ]] && llama_destdir="$1"
+    install_llama_to_destdir
+    print_next_steps "$llama_destdir"
+}
+
+main "$@"
