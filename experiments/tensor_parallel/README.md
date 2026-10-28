@@ -8,6 +8,12 @@ Fluxo completo do benchmark:
 - [Diagrama SVG](../../docs/diagrams/tensor-parallel-benchmark.svg)
 - [Fonte Mermaid](../../docs/diagrams/tensor-parallel-benchmark.mmd)
 
+## TODO
+
+- [ ] Testar um modelo real com checkpoint acima de 6 GB, carregando apenas o
+  shard necessario em cada maquina, e comparar decode de um token, prefill,
+  uso de RAM, speedup e qualidade dos logits com BF16 na rede.
+
 ## Operacoes
 
 - column parallel: divide as colunas de `QKV`, `gate` e `up`; cada no calcula
@@ -16,6 +22,29 @@ Fluxo completo do benchmark:
   calcula uma contribuicao e as saidas passam por `all_reduce`.
 - MLP sharded: mantem `gate/up` divididos ate o `down`, sem gather/scatter do
   tensor intermediario; somente a saida hidden passa por `all_reduce`.
+
+## Split Vertical Vs. Tensor Parallel
+
+O split vertical nao acelera um unico token porque as duas maquinas nao calculam
+a mesma camada simultaneamente. Porem, ele permite carregar um modelo que nao
+cabe em uma maquina.
+
+| Caracteristica | Split vertical | Tensor parallel |
+|---|---|---|
+| Divide | Camadas | Matrizes de cada camada |
+| Objetivo principal | Capacidade | Capacidade e possivel velocidade |
+| Comunicacao | Entre cortes do modelo | Em praticamente todas as camadas |
+| Execucao de um token | Sequencial | Paralela |
+| Complexidade | Menor | Maior |
+| Rede lenta | Mais adequado | Muito prejudicado |
+| Speedup de um usuario | Geralmente nao | Apenas com interconexao rapida |
+| Throughput em batch | Pipeline pode ajudar | Pode ajudar bastante |
+
+No hardware atual, o split vertical e a opcao mais simples quando o modelo nao
+cabe em uma maquina. Se o modelo cabe e o objetivo e a menor latencia para um
+usuario, executar em uma unica maquina continua sendo a melhor opcao. Tensor
+parallel passa a fazer sentido para prefill grande, batches ou uma interconexao
+de baixa latencia.
 
 PyTorch usa Intel MKL, oneDNN e AVX2 para o matmul. Gloo executa os collectives
 em C++, portanto o GIL do Python nao participa do caminho medido.
