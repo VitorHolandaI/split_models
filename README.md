@@ -47,6 +47,7 @@ Each node can switch role at runtime via `split-llama mode`:
 split-llama mode status
 split-llama mode replica --model small
 split-llama mode distributed-master --model small --rpc 192.168.0.11:50052,192.168.0.12:50052
+split-llama mode distributed-master --model small --auto-discover
 split-llama mode worker
 ```
 
@@ -63,6 +64,101 @@ split-llama nodes              # only live RPC workers
 split-llama fleet nodes        # every node + current mode (replicas, masters, idle)
 ```
 
+For an interactive distributed chat, including immediately after a replicated
+run:
+
+```bash
+split-llama master --discover \
+  --hf unsloth/Qwen3.5-9B-GGUF:Q6_K \
+  -- -c 32768
+```
+
+`master --discover` first finds every control agent, returns every node to
+`worker` over fleet SSH, and then discovers the live RPC endpoints. The master
+downloads the complete GGUF; workers receive only their assigned layer tensors
+and retain the weights and KV cache for those layers. The model cache keeps only
+the selected model, preserving it when selected again and deleting it when a
+different model is chosen.
+
+#### Hardware measurement and capacity planning
+
+Before splitting, `master --discover` measures every discovered node (SSH) and
+prints a capacity table:
+
+```text
+NODE            RAM GiB    TOPS    MIPS  tok/s CPU tok/s Vulkan
+10.0.0.2           14.0    8.00    5000       3.00        10.00
+10.0.0.4           14.0    8.00    5000       3.00        20.00
+```
+
+Then it asks how many machines to use in total (master included), validated
+between the safe minimum and the discovered maximum. Workers are ordered by
+Vulkan throughput; machines without a Vulkan driver fall back to their CPU
+tok/s and rank last. Unselected nodes stay out of the RPC endpoints.
+
+`split-llama hardware-bench` runs the same measurements on one machine and
+explains the units:
+
+- **TOPS** — iGPU INT8 matrix math (vkpeak), tera-operations per second.
+- **TFLOPS** — iGPU FP16 matrix math (vkpeak), tera-floating-point ops/s.
+- **MIPS** — CPU integer rating from `7z b`; kept in its native unit, never
+  renamed to TOPS.
+- **tok/s CPU / Vulkan** — effective llama.cpp throughput with the official
+  small model (`unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M`, prompt 128, gen 32): what
+  actually matters for the split.
+
+```bash
+split-llama hardware-bench          # human table
+split-llama hardware-bench --json   # one record per node, for the fleet
+```
+
+#### Model cache: RAM by default, USB for the split master
+
+All runtime paths use `/run`, which is RAM-backed in the live ISO. The original
+disk is never formatted, mounted, or used for model data. In a distributed run,
+only the master may use an explicitly selected USB ext4 partition for the full
+GGUF; workers receive their layer tensors over RPC and keep them in RAM.
+Replicas also keep their complete model in RAM.
+
+Select a specific partition when more than one USB is present:
+
+```bash
+split-llama master --discover --usb-device /dev/sda1 \
+  --hf unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M
+split-llama mode distributed-master --model small --auto-discover \
+  --usb-device /dev/sda1
+```
+
+Without `--usb-device`, the selected server mode uses the RAM-backed cache.
+The free space is validated before any USB download starts — the previous model
+is only erased after the new one is known to fit, including a 0.5 GB reserve.
+
+#### One large model, end to end
+
+A 16 GB USB ext4 holds the catalog's largest checked GGUF
+(`ggml-org/gpt-oss-20b-GGUF:MXFP4`, 12.11 GB) with room to spare:
+
+```bash
+split-llama master --discover \
+  --usb-device /dev/sda1 \
+  --hf ggml-org/gpt-oss-20b-GGUF:MXFP4 \
+  -- -c 32768
+```
+
+Preview the fleet plan before changing any node or downloading the model. With
+no `--machines`, the dry-run selects the smallest safe master-first prefix:
+
+```bash
+split-llama master --discover --dry-run \
+  --hf ggml-org/gpt-oss-20b-GGUF:MXFP4
+```
+
+The output reports each node's safe RAM budget, estimated model share, and
+contiguous layer range. Known models provide their layer count automatically.
+Layer ranges are proportional estimates; llama.cpp can adjust them at runtime
+from the actual tensor sizes. For an uncatalogued GGUF, pass `--model-size-gb N`
+and, when layer ranges are wanted, `--model-layers N`.
+
 ### Fleet commands (one coordinator node, no manual IPs)
 
 ```bash
@@ -75,6 +171,7 @@ split-llama fleet bench \
   --scenario distributed --model small --profile users-2k --auto-discover
 
 split-llama fleet reboot       # reboot every discovered node
+split-llama fleet reset --auto-discover  # return every node to worker without reboot
 ```
 
 What `fleet bench --auto-discover` does automatically:

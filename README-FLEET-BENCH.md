@@ -20,7 +20,8 @@ Há dois discoveries intencionalmente separados:
   inclusive réplicas e masters.
 
 O segundo permanece ativo durante todas as trocas de modo e é usado por
-`fleet bench --auto-discover` e `fleet reboot`.
+`fleet bench --auto-discover`, `fleet reset --auto-discover`, `fleet reboot` e
+pela preparação automática de `master --discover`.
 
 ## Fluxo rápido (copiar/colar)
 
@@ -132,6 +133,98 @@ split-llama bench-capacity --profile users-2k \
 # 5. Para voltar ao worker depois (transição supervisionada)
 split-llama mode worker
 ```
+
+## Conversa distribuída após replicated
+
+`master --discover` não reutiliza endpoints RPC mortos. Ele descobre todos os
+nós pelo plano de controle, executa `split-llama mode worker` via SSH em cada
+um e somente depois descobre os workers RPC vivos. Portanto pode ser executado
+diretamente após um cenário replicated:
+
+```bash
+split-llama master --discover \
+  --hf unsloth/Qwen3.5-9B-GGUF:Q6_K \
+  -- -c 32768
+```
+
+### Benchmark de hardware e planejamento
+
+Antes de dividir, `master --discover` mede cada nó descoberto via SSH
+(`split-llama hardware-bench --json` em cada um) e imprime a tabela:
+
+```text
+NODE            RAM GiB    TOPS    MIPS  tok/s CPU tok/s Vulkan
+10.0.0.2           14.0    8.00    5000       3.00        10.00
+10.0.0.4           14.0    8.00    5000       3.00        20.00
+```
+
+Unidades medidas por `split-llama hardware-bench`:
+
+- **TOPS / TFLOPS** — picos sintéticos da iGPU (vkpeak): matriz INT8
+  (tera-operations/s) e FP16 (tera-floating-point ops/s).
+- **MIPS** — rating inteiro da CPU do `7z b`, mantido na unidade nativa.
+- **tok/s CPU / Vulkan** — throughput real do llama.cpp com o modelo pequeno
+  oficial (`unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M`, prompt 128, geração 32): é o que
+  decide a ordem dos workers.
+
+Máquinas sem Vulkan (ou sem `int8-matrix`) não derrubam o planejamento: o
+hardware-bench zera iGPU e tok/s Vulkan com aviso, e o nó é ordenado pelo
+tok/s da CPU. Depois da medição o comando pergunta quantas máquinas usar no
+total (master incluso), entre o mínimo seguro calculado (50% da RAM de cada
+nó somada) e o máximo descoberto; `--machines N` pula a pergunta. Workers são
+ordenados por tok/s Vulkan e os não selecionados ficam fora dos endpoints RPC.
+
+### Cache do modelo: RAM por padrão, USB somente no master split
+
+Todos os caminhos de runtime ficam em `/run`, que é RAM na ISO live. O disco
+original nunca é formatado, montado ou usado para dados do modelo. No cenário
+distributed, somente o master pode receber `--usb-device /dev/sda1` para guardar
+o GGUF completo; os workers recebem apenas as layers via RPC e as mantêm em
+RAM. Em replicated, cada nó mantém a cópia completa em RAM.
+
+Sem `--usb-device`, o modo de servidor usa o cache temporário em RAM. O espaço
+livre é validado **antes** de apagar um download anterior no USB (reserva de
+0.5 GB), então um modelo que não cabe não destrói o cache existente.
+
+### Modelo grande no USB de 16 GB
+
+O maior GGUF do catálogo cabe em um USB ext4 de 16 GB:
+`ggml-org/gpt-oss-20b-GGUF:MXFP4` tem 12.11 GB medidos (reserva de 0.5 GB
+inclusa, ~15.5 GB livres no USB):
+
+```bash
+split-llama master --discover \
+  --usb-device /dev/sda1 \
+  --hf ggml-org/gpt-oss-20b-GGUF:MXFP4 \
+  -- -c 32768
+```
+
+O master lê o GGUF completo do USB; os workers recebem apenas as layers
+atribuídas via RPC.
+
+Antes de alterar a frota, o plano pode ser inspecionado sem `--machines`:
+
+```bash
+split-llama master --discover --dry-run \
+  --hf ggml-org/gpt-oss-20b-GGUF:MXFP4
+```
+
+O comando mede a capacidade por SSH, escolhe o menor prefixo seguro e mostra a
+RAM segura, a parcela estimada do modelo e a faixa contínua de layers de cada
+máquina. Modelos conhecidos têm a quantidade de layers detectada
+automaticamente. Essas faixas são proporcionais; o `llama.cpp` pode ajustá-las
+pelos tamanhos reais dos tensores. Para modelo fora do catálogo, informe também
+`--model-size-gb N` e, se quiser faixas, `--model-layers N`.
+
+O master baixa o GGUF completo para seu cache. Durante o load, os
+workers recebem somente os tensors/layers atribuídos via RPC; cada worker mantém
+os pesos e o KV cache dessas layers. O master continua limitado pela RAM
+necessária para o GGUF completo, sua parcela local, runtime, sistema e contexto.
+O repositório e o tamanho foram conferidos; esse 9B ainda precisa ser validado
+por inferência no laboratório físico.
+
+O cache mantém apenas um modelo selecionado. Repetir o mesmo `--hf` reutiliza o
+download; selecionar outro remove o anterior antes de baixar o novo.
 
 Para HAProxy (cenário réplica com várias máquinas), gere o `haproxy.cfg`
 e suba na máquina que alcança todas as réplicas:
@@ -248,6 +341,10 @@ split-llama mode distributed-master \
 ### 5. Reset (volta ao worker)
 
 ```bash
+# Descobre os nós de controle e volta todos a worker por SSH, sem reboot
+split-llama fleet reset --auto-discover
+
+# Ou informe os IPs manualmente
 split-llama fleet reset --nodes 192.168.0.10,192.168.0.20
 ```
 
@@ -269,9 +366,35 @@ Cada ponto: 1 warmup + 3 medições, 128 tokens gerados.
 tokens_generated, p50_ttft_s, p95_ttft_s, p99_ttft_s, p50_e2e_s, p95_e2e_s,
 p99_e2e_s, total_tok_s, busy_slots_peak, saturated`
 
+### O que significa `total_tok_s`
+
+`total_tok_s` é a taxa média **por requisição**, ponderada por tokens:
+
+```text
+Σ tokens das requisições OK / Σ duração e2e das requisições OK
+```
+
+O denominador é a soma das durações, não o tempo de parede da onda. Com
+requisições de duração parecida, o valor coincide com o tok/s de uma
+requisição isolada e **não cresce** com o número de usuários. Quando a
+latência sobe, ele cai — foi o que aconteceu no distribuído, de `9.38` para
+`4.15 tok/s` entre 2 e 8 usuários.
+
+O `tok_s` do JSONL é outra métrica: `tokens / e2e_s` daquela requisição
+individual.
+
 ## Modelos oficiais
 
 | Perfil | Modelo | Tamanho | RAM mínima por nó |
 |---|---|---|---|
 | `small` | Qwen3.5-0.8B (Q4_K_M) | 0.53 GB | 4 GB |
 | `large` | Qwen3.5-4B (Q4_K_M) | 2.74 GB | 8 GB |
+
+## Evidências de execução
+
+Fotos recortadas de execuções reais com o código deste repositório, anteriores
+à política de cache USB:
+
+- [Distribuído, 12 nós, 2–8 usuários](docs/evidence/2026-08-21-fleet-bench-12-nodes/distributed-users-2-4-8.jpg)
+- [Replicado, 12 nós, 2–32 usuários](docs/evidence/2026-08-21-fleet-bench-12-nodes/replicated-users-2-32.jpg)
+- [Índice das evidências](docs/evidence/README.md)
