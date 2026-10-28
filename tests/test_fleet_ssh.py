@@ -1,3 +1,4 @@
+import shlex
 import unittest
 
 from split_lm.llama_rpc.fleet_ssh import SshError, SshKeyRunner, SshResult
@@ -40,7 +41,16 @@ class SshKeyRunnerTest(unittest.TestCase):
                          "/root/.ssh/fleet_ed25519")
         self.assertIn("BatchMode=yes", command)
         self.assertIn("root@node-a", command)
-        self.assertEqual(command[-3:], ["split-llama", "mode", "status"])
+        self.assertEqual(command[-1], "split-llama mode status")
+
+    def test_remote_argv_survives_spaces_and_newlines(self):
+        fake = FakeSubprocessRun()
+        runner = SshKeyRunner("key", run=fake)
+        remote_argv = ["bash", "-c", "printf 'SECTION hostname\\n'; uname -n"]
+
+        runner.run("node-a", remote_argv)
+
+        self.assertEqual(shlex.split(fake.calls[0][0][-1]), remote_argv)
 
     def test_success_returns_stdout_and_stderr(self):
         fake = FakeSubprocessRun(stdout="role=worker", stderr="")

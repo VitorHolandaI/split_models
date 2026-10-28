@@ -215,7 +215,51 @@ def _run_cluster(args: argparse.Namespace, ranges: list[tuple[int, int]]) -> int
     return int(any(returncode != 0 for _, returncode, _, _ in outputs))
 
 
+def print_environment_banner() -> None:
+    """Print a verbose banner describing the machine this benchmark runs on.
+
+    Purely informational: the numbers below explain why a local split run is
+    memory- and bandwidth-bound, so they belong next to every result.
+
+    Usage example:
+        print_environment_banner()
+    """
+    page_size = os.sysconf("SC_PAGE_SIZE")
+    total_pages = os.sysconf("SC_PHYS_PAGES")
+    total_bytes = int(page_size * total_pages)
+    available = available_memory_bytes()
+    used = total_bytes - available
+    cpu_count = os.cpu_count() or 0
+    affinity = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else cpu_count
+    load_1, load_5, load_15 = os.getloadavg()
+
+    print("=" * 64)
+    print("SPLIT-LM LOCAL CLUSTER BENCHMARK")
+    print("=" * 64)
+    print(f"python       : {sys.version.split()[0]} ({sys.executable})")
+    print(f"platform     : {sys.platform}")
+    print(f"pid          : {os.getpid()}")
+    print(f"cwd          : {os.getcwd()}")
+    print("-" * 64)
+    print(f"cpu total    : {cpu_count}")
+    print(f"cpu usable   : {affinity}")
+    print(f"loadavg      : {load_1:.2f} {load_5:.2f} {load_15:.2f}")
+    print("-" * 64)
+    print(f"ram total    : {_format_bytes(total_bytes)}")
+    print(f"ram used     : {_format_bytes(used)}")
+    print(f"ram available: {_format_bytes(available)}")
+    print(f"page size    : {_format_bytes(page_size)}")
+    print("-" * 64)
+
+    for variable in ("TOKENIZERS_PARALLELISM", "OMP_NUM_THREADS",
+                     "HF_HOME", "CUDA_VISIBLE_DEVICES"):
+        print(f"{variable:<22}= {os.environ.get(variable, '<unset>')}")
+
+    print("=" * 64, flush=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    print_environment_banner()
     args = _parse_args(argv)
     config = AutoConfig.from_pretrained(args.model)
     _check_supported_config(config)

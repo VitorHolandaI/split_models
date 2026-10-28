@@ -8,6 +8,7 @@ por senha nunca e tentado (`BatchMode=yes`).
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -54,10 +55,11 @@ class SshKeyRunner:
         self._run = run
 
     def run(self, host: str, argv: Sequence[str]) -> SshResult:
+        remote_command = shlex.join(argv)
         command = ["ssh", "-i", self._key, "-o", "BatchMode=yes",
                    "-o", "StrictHostKeyChecking=accept-new",
                    "-o", f"ConnectTimeout={self._connect_timeout}",
-                   f"{self._user}@{host}", *argv]
+                   f"{self._user}@{host}", remote_command]
         try:
             result = self._run(command, check=False, capture_output=True,
                                text=True)

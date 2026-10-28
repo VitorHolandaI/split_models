@@ -11,3 +11,5 @@ vulkan-tools
 mesa
 # HAProxy para o nó coordenador nos cenários replicados.
 haproxy
+# Benchmark oficial da CPU; vkpeak Vulkan entra como binário upstream pinado.
+7zip

@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LLAMA_LIB = ROOT / "deploy" / "lib_llamacpp_build.sh"
 ARCHISO_LIB = ROOT / "deploy" / "lib_archiso_build.sh"
 VERSION_ENV = ROOT / "deploy" / "llama-version.env"
+VKPEAK_VERSION_ENV = ROOT / "deploy" / "vkpeak-version.env"
 
 
 def read_pin() -> dict[str, str]:
@@ -26,6 +27,18 @@ def run_llama_lib(script: str) -> subprocess.CompletedProcess:
 
 
 class LlamaVersionPinTest(unittest.TestCase):
+    def test_vkpeak_release_is_pinned_and_staged_with_a_digest(self):
+        recipe = LLAMA_LIB.read_text(encoding="utf-8")
+        version = VKPEAK_VERSION_ENV.read_text(encoding="utf-8")
+
+        self.assertIn("VKPEAK_RELEASE=20260527", version)
+        self.assertIn(
+            "VKPEAK_SHA256=2c0970b8805726d841f39d03f8c9ec58f55925167b55ed578a3b0385937992c2",
+            version)
+        self.assertIn('source "$repo_root/deploy/vkpeak-version.env"', recipe)
+        self.assertIn("sha256sum -c --quiet", recipe)
+        self.assertIn("usr/bin/vkpeak", recipe)
+
     def test_pin_names_a_tag_a_commit_and_a_digest(self):
         pin = VERSION_ENV.read_text(encoding="utf-8")
 

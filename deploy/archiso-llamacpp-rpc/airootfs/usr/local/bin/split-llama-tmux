@@ -14,6 +14,6 @@ session="split-models"
 /usr/bin/tmux set-option -t "$session" status-interval 2
 /usr/bin/tmux set-option -t "$session" status-left ' EXPERIMENTAL RPC - LAN ISOLADA '
 /usr/bin/tmux set-option -t "$session" status-left-length 40
-/usr/bin/tmux set-option -t "$session" status-right-length 100
+/usr/bin/tmux set-option -t "$session" status-right-length 120
 /usr/bin/tmux set-option -t "$session" status-right \
     '#(/usr/local/bin/split-models-status) '

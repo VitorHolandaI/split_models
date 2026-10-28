@@ -33,6 +33,9 @@ from .capacity_metrics import (
 from .capacity_profiles import (
     PROFILES as CAPACITY_PROFILES, CapacityProfileError, get_profile)
 from .controller import ModeController, ModeTransitionError
+from .distributed_planner import (
+    CapacityPlan, CapacityPlanError, RankedNode, allocate_model,
+    build_capacity_plan, known_model_gigabytes, known_model_layers)
 from .examples import format_llama_examples
 from .discovery import (
     DISCOVERY_PORT, RPC_PORT, RpcWorker, discover_workers, local_worker,
@@ -41,10 +44,16 @@ from .fleet_coordinator import FleetCoordinator, FleetError
 from .fleet_discovery import (
     FLEET_DISCOVERY_PORT, FleetNode, discover_fleet_nodes,
     serve_fleet_discovery)
-from .fleet_inventory import InventoryError, NodeInventory
+from .fleet_inventory import (
+    InventoryError, NodeInventory, inventory_sections_command,
+    parse_node_inventory)
 from .fleet_ssh import FLEET_KEY, SshError, SshKeyRunner, SshRunner
 from .health import TcpPortProbe
+from .hardware_benchmark import (
+    HardwareBenchmarkError, HardwareScore, format_hardware_score,
+    run_hardware_benchmark)
 from .master import DEFAULT_GGUF_REPO, list_devices_command, llama_cli_command
+from .model_cache import select_cached_model
 from .mode_state import (
     MODEL_PROFILES, Mode, ModeConfig, ModeConfigError, NodeState)
 from .mode_store import (
@@ -60,6 +69,7 @@ log = logging.getLogger("split_lm")
 _HEADER = f"{'NODE':<16} {'HOSTNAME':<16} {'RPC':<22}"
 _INSECURE = ("AVISO: o backend RPC do llama.cpp nao tem autenticacao nem "
              "criptografia. Use somente em LAN isolada.")
+_MODEL_CACHE_HELPER = Path("/usr/local/bin/split-llama-model-cache")
 
 
 def random_node_id() -> str:
@@ -114,7 +124,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     master = commands.add_parser(
         "master", help="roda llama-cli usando os workers descobertos",
-        epilog="argumentos apos -- vao direto para o llama-cli")
+        epilog="""Exemplo de planejamento sem efeitos colaterais:
+  split-llama master --discover --dry-run \\
+    --hf ggml-org/gpt-oss-20b-GGUF:MXFP4
+
+Para modelos conhecidos, as camadas sao detectadas automaticamente.
+--model-layers serve apenas como override para modelos fora do catalogo.
+
+Argumentos apos -- vao direto para o llama-cli.""",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     _add_shared_arguments(master)
     master.add_argument("--discover", action="store_true",
                         help="descobre os workers em vez de receber --rpc pronto")
@@ -124,8 +142,21 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="segundos aguardando respostas de discovery")
     master.add_argument("--rpc", default="",
                         help="lista host:porta explicita, quando nao usar --discover")
+    master.add_argument("--usb-device", default="",
+                        help="particao USB ext4 do cache, por exemplo /dev/sda1")
+    master.add_argument("--model-size-gb", type=float, default=None,
+                        help="tamanho medido para GGUF fora do catalogo")
+    master.add_argument("--machines", type=int, default=None,
+                        help="total incluindo master; sem valor pergunta no TTY")
+    master.add_argument("--dry-run", action="store_true",
+                        help="calcula o plano sem mudar nos nem iniciar inferencia")
+    master.add_argument("--model-layers", type=int, default=None,
+                        help="override de camadas para modelo fora do catalogo")
+    master.add_argument("--hardware-timeout", type=int, default=900,
+                        help="timeout por no para hardware-bench small")
     master.add_argument("llama_args", nargs="*",
                         help="argumentos extras repassados ao llama-cli")
+    _add_runtime_arguments(master)
 
     bench = commands.add_parser(
         "bench", help="varre proporcoes e contextos com llama-bench")
@@ -144,6 +175,15 @@ def _build_parser() -> argparse.ArgumentParser:
     speed.add_argument("--model", required=True, help="caminho do arquivo GGUF")
     speed.add_argument("--rpc", default="", help="mede atraves de um worker")
 
+    hardware = commands.add_parser(
+        "hardware-bench", help="mede CPU, iGPU e llama.cpp small nesta maquina")
+    hardware.add_argument("--json", action="store_true",
+                          help="emite um registro JSON para coleta da frota")
+    hardware.add_argument("--cache-dir", type=Path,
+                          default=RUNTIME_DIR / "hardware-bench-cache",
+                          help="cache temporario do modelo small")
+    _add_runtime_arguments(hardware)
+
     mode = commands.add_parser(
         "mode", help="troca o papel supervisionado deste no sem reboot")
     mode.add_argument("target",
@@ -155,11 +195,19 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="slots/sequencias vivas do llama-server")
     mode.add_argument("--rpc", default="",
                       help="endpoints host:porta separados por virgula; "
-                           "obrigatorio no distributed-master")
+                           "obrigatorio no distributed-master sem autodiscovery")
+    mode.add_argument("--auto-discover", action="store_true",
+                      help="descobre a frota e monta os endpoints RPC")
+    mode.add_argument("--broadcast", default="255.255.255.255",
+                      help="broadcast da LAN para autodiscovery")
+    mode.add_argument("--discovery-timeout", type=float, default=5.0,
+                      help="segundos aguardando respostas de autodiscovery")
+    mode.add_argument("--usb-device", default="",
+                      help="particao USB ext4 do cache, por exemplo /dev/sda1")
     mode.add_argument("--port", type=int, default=8080,
                       help="porta HTTP do llama-server")
     mode.add_argument("--keep-model-cache", action="store_true",
-                      help="mantem o GGUF em tmpfs ao sair de master/replica")
+                      help="mantem o cache RAM/USB selecionado ao sair do modo")
     mode.add_argument("--health-timeout", type=float, default=900.0,
                       help="segundos esperando GET /health antes do rollback")
     mode.add_argument("--brief", action="store_true",
@@ -248,8 +296,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     reset = fleet_sub.add_parser(
         "reset", help="devolve todos os nos ao modo worker e limpa o estado")
-    reset.add_argument("--nodes", required=True,
+    reset.add_argument("--nodes", default="",
                        help="hosts SSH separados por virgula")
+    reset.add_argument("--auto-discover", action="store_true",
+                       help="descobre todos os nos pelo plano de controle")
+    reset.add_argument("--broadcast-address", default="255.255.255.255",
+                       help="endereco de broadcast para discovery")
+    reset.add_argument("--discovery-timeout", type=float, default=5.0,
+                       help="segundos escutando respostas de discovery")
+    reset.add_argument("--discovery-port", type=int,
+                       default=FLEET_DISCOVERY_PORT,
+                       help="porta UDP do plano de controle")
 
     reboot = fleet_sub.add_parser(
         "reboot", help="reinicia todos os nos descobertos via UDP broadcast")
@@ -348,18 +405,267 @@ def run_nodes(options: argparse.Namespace) -> int:
     return 0 if workers else 1
 
 
+def _restore_discovered_workers(options: argparse.Namespace,
+                                runner: SshRunner | None = None
+                                ) -> tuple[str, ...]:
+    """Return every control-discovered node to RPC worker mode over SSH."""
+    found = discover_fleet_nodes(FLEET_DISCOVERY_PORT, options.timeout,
+                                 options.broadcast)
+    hosts = tuple(node.address for node in found)
+    if not hosts:
+        log.warning("nenhum no respondeu ao discovery de controle")
+        return ()
+    ssh = runner or SshKeyRunner(_resolve_fleet_key(), user="root")
+    _return_all_to_worker(ssh, hosts)
+    return hosts
+
+
+def _discover_master_hosts(options: argparse.Namespace) -> tuple[str, ...]:
+    found = discover_fleet_nodes(FLEET_DISCOVERY_PORT, options.timeout,
+                                 options.broadcast)
+    if not found:
+        log.warning("nenhum no respondeu ao discovery de controle")
+        return ()
+    runner = SshKeyRunner(_resolve_fleet_key(), user="root")
+    return _select_master_hosts(options, found, runner)
+
+
+def _build_master_capacity_plan(options: argparse.Namespace,
+                                found: tuple[FleetNode, ...],
+                                runner: SshRunner,
+                                restore_workers: bool = True
+                                ) -> CapacityPlan:
+    hosts = tuple(node.address for node in found)
+    if restore_workers:
+        _return_all_to_worker(runner, hosts)
+    ranked = tuple(_measure_ranked_node(host, runner, options.hardware_timeout)
+                   for host in hosts)
+    model_gb = (known_model_gigabytes(options.hf)
+                if options.model_size_gb is None else options.model_size_gb)
+    return build_capacity_plan(model_gb, ranked, lan_address())
+
+
+def _select_master_hosts(options: argparse.Namespace,
+                         found: tuple[FleetNode, ...],
+                         runner: SshRunner) -> tuple[str, ...]:
+    plan = _build_master_capacity_plan(options, found, runner)
+    total = _machine_total(plan, options.machines)
+    selected = plan.select(total)
+    _log_capacity_plan(plan, selected)
+    return tuple(node.inventory.host for node in selected)
+
+
+def _measure_ranked_node(host: str, runner: SshRunner,
+                         timeout: int) -> RankedNode:
+    inventory = parse_node_inventory(
+        runner.run(host, inventory_sections_command()).stdout, host)
+    command = ["timeout", str(timeout), "split-llama", "hardware-bench", "--json"]
+    score = HardwareScore.from_json(runner.run(host, command).stdout)
+    log.info("%s: %.2f TOPS, %d MIPS, %.2f Vulkan tok/s", host,
+             score.int8_tops, score.cpu_mips, score.vulkan_tokens_per_second)
+    return RankedNode(inventory, score)
+
+
+def _machine_total(plan: CapacityPlan, requested: int | None) -> int:
+    if requested is not None:
+        return requested
+    maximum = len(plan.ordered_nodes)
+    if not sys.stdin.isatty() or plan.minimum_total == maximum:
+        return plan.minimum_total
+    answer = input(
+        f"Modelo {plan.model_gigabytes:.2f} GB: minimo {plan.minimum_total}, "
+        f"disponiveis {maximum}. Quantas maquinas no total? "
+        f"[{plan.minimum_total}]: ").strip()
+    return int(answer) if answer else plan.minimum_total
+
+
+def _log_capacity_plan(plan: CapacityPlan,
+                       selected: tuple[RankedNode, ...]) -> None:
+    """Log the safe selection and print the measured fleet table."""
+    log.info("modelo %.2f GB; minimo seguro=%d; selecionadas=%d",
+             plan.model_gigabytes, plan.minimum_total, len(selected))
+    print(format_capacity_table(selected))
+
+
+def format_capacity_table(selected: tuple[RankedNode, ...]) -> str:
+    """Render RAM, TOPS, MIPS, and tok/s per selected node for the operator."""
+    rows = [f"{'NODE':<14} {'RAM GiB':>8} {'TOPS':>7} {'MIPS':>7} "
+            f"{'tok/s CPU':>10} {'tok/s Vulkan':>12}"]
+    for node in selected:
+        hardware = node.hardware
+        rows.append(
+            f"{node.inventory.host:<14} "
+            f"{node.inventory.mem_total_kb / (1024 * 1024):>8.1f} "
+            f"{hardware.int8_tops:>7.2f} {hardware.cpu_mips:>7d} "
+            f"{hardware.cpu_tokens_per_second:>10.2f} "
+            f"{hardware.vulkan_tokens_per_second:>12.2f}")
+    return "\n".join(rows)
+
+
+def format_capacity_plan(plan: CapacityPlan,
+                         selected: tuple[RankedNode, ...],
+                         model_layers: int | None
+                         ) -> str:
+    """Render the dry-run model budget and estimated contiguous layer slices."""
+    allocations = allocate_model(plan, selected, model_layers)
+    safe_total = sum(node.safe_model_gib for node in selected)
+    selected_hosts = {node.inventory.host for node in selected}
+    unused_hosts = [node.inventory.host for node in plan.ordered_nodes
+                    if node.inventory.host not in selected_hosts]
+    lines = [
+        "DRY-RUN: nenhum no sera alterado, nenhum download sera feito",
+        f"modelo: {plan.model_gigabytes:.2f} GB | capacidade segura: "
+        f"{safe_total:.2f} GiB | minimo: {plan.minimum_total} maquinas",
+        f"plano: {len(selected)} de {len(plan.ordered_nodes)} maquinas "
+        "(master incluso)",
+        f"{'PAPEL':<8} {'HOST':<16} {'RAM GiB':>8} {'SEGURA':>8} "
+        f"{'MODELO':>8} {'CAMADAS':>12}",
+    ]
+    for index, allocation in enumerate(allocations):
+        layer_range = ("n/d" if allocation.layer_start is None else
+                       f"{allocation.layer_start}-{allocation.layer_end}")
+        lines.append(
+            f"{'master' if index == 0 else 'worker':<8} "
+            f"{allocation.node.inventory.host:<16} "
+            f"{allocation.node.inventory.mem_total_kb / (1024 * 1024):>8.1f} "
+            f"{allocation.node.safe_model_gib:>8.2f} "
+            f"{allocation.model_gigabytes:>8.2f} {layer_range:>12}")
+    if unused_hosts:
+        lines.append(f"fora do plano minimo: {', '.join(unused_hosts)}")
+    if model_layers is None:
+        lines.append("camadas: use --model-layers N para exibir faixas; "
+                     "MODELO e uma estimativa por capacidade")
+    else:
+        lines.append("camadas: faixas proporcionais estimadas; o llama.cpp "
+                     "pode ajustar pelos tamanhos reais dos tensores")
+    return "\n".join(lines)
+
+
+def _dry_run_model_layers(options: argparse.Namespace) -> int | None:
+    if options.model_layers is not None:
+        return options.model_layers
+    try:
+        return known_model_layers(options.hf)
+    except CapacityPlanError:
+        return None
+
+
+def _run_master_dry_run(options: argparse.Namespace) -> int:
+    if not options.discover:
+        log.error("--dry-run exige --discover para calcular a frota")
+        return 1
+    found = discover_fleet_nodes(options.discovery_port, options.timeout,
+                                 options.broadcast)
+    if not found:
+        log.error("nenhum no respondeu ao discovery de controle")
+        return 1
+    runner = SshKeyRunner(_resolve_fleet_key(), user="root")
+    try:
+        plan = _build_master_capacity_plan(options, found, runner, False)
+        total = options.machines or plan.minimum_total
+        selected = plan.select(total)
+        print(format_capacity_plan(plan, selected,
+                                   _dry_run_model_layers(options)))
+        return 0
+    except (CapacityPlanError, SshError, OSError, ValueError) as error:
+        log.error("dry-run: %s", error)
+        return 1
+
+
 def _resolve_endpoints(options: argparse.Namespace) -> str:
     if options.rpc:
         return options.rpc
+    selected_hosts: tuple[str, ...] = ()
+    if options.discover:
+        selected_hosts = _discover_master_hosts(options)
     workers = discover_workers(options.discovery_port, options.timeout,
                                options.broadcast)
+    if selected_hosts:
+        workers = tuple(worker for worker in workers
+                        if worker.address in selected_hosts)
     print(format_workers(workers), file=sys.stderr)
     return rpc_endpoints(workers)
 
 
+def _set_model_cache_device(runtime_dir: Path, device: str) -> None:
+    selector = runtime_dir / "model-cache-device"
+    if not device:
+        if runtime_dir.exists():
+            selector.unlink(missing_ok=True)
+        return
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    selector.write_text(device + "\n", encoding="utf-8")
+
+
+def _configure_direct_mode_discovery(options: argparse.Namespace) -> None:
+    if options.target != Mode.DISTRIBUTED_MASTER.value:
+        raise ModeConfigError(
+            f"--auto-discover com target={options.target!r}; esperado "
+            "distributed-master")
+    found = discover_fleet_nodes(FLEET_DISCOVERY_PORT,
+                                 options.discovery_timeout, options.broadcast)
+    local_id = _local_node_id()
+    remote_hosts = tuple(node.address for node in found
+                         if node.node_id != local_id)
+    if not remote_hosts:
+        raise ModeConfigError(
+            "autodiscovery encontrou nenhum worker remoto; esperado pelo "
+            "menos um outro no")
+    runner = SshKeyRunner(_resolve_fleet_key(), user="root")
+    _return_all_to_worker(runner, remote_hosts)
+    workers = discover_workers(DISCOVERY_PORT, options.discovery_timeout,
+                               options.broadcast)
+    remote_ids = {node.node_id for node in found if node.node_id != local_id}
+    endpoints = tuple(worker.endpoint for worker in workers
+                      if worker.node_id in remote_ids)
+    if not endpoints:
+        raise ModeConfigError(
+            f"autodiscovery nao encontrou RPC dos nos {remote_hosts!r}")
+    options.rpc = rpc_endpoints(tuple(
+        worker for worker in workers if worker.node_id in remote_ids))
+
+
+def _prepare_master_model_cache(model: str,
+                                model_gigabytes: float | None = None,
+                                runtime_dir: Path = RUNTIME_DIR,
+                                usb_device: str = ""
+                                ) -> dict[str, str] | None:
+    _set_model_cache_device(runtime_dir, usb_device)
+    cache_setting = os.environ.get("LLAMA_CACHE")
+    if cache_setting:
+        cache_dir = Path(cache_setting)
+    elif _MODEL_CACHE_HELPER.exists():
+        subprocess.run([str(_MODEL_CACHE_HELPER)], check=True)
+        cache_dir = StateStore().model_cache_dir
+    else:
+        return None
+    select_cached_model(cache_dir, model, model_gigabytes)
+    return {**os.environ, "LLAMA_CACHE": str(cache_dir)}
+
+
+def _optional_model_gigabytes(options: argparse.Namespace) -> float | None:
+    override = getattr(options, "model_size_gb", None)
+    if override is not None:
+        return float(override)
+    try:
+        return known_model_gigabytes(options.hf)
+    except CapacityPlanError:
+        return None
+
+
 def run_master(options: argparse.Namespace) -> int:
     """Run llama-cli against the discovered workers."""
-    endpoints = _resolve_endpoints(options)
+    if getattr(options, "dry_run", False):
+        return _run_master_dry_run(options)
+    try:
+        endpoints = _resolve_endpoints(options)
+        environment = _prepare_master_model_cache(
+            options.hf, _optional_model_gigabytes(options),
+            getattr(options, "runtime_dir", RUNTIME_DIR),
+            getattr(options, "usb_device", ""))
+    except (OSError, SshError, ValueError, subprocess.CalledProcessError) as error:
+        log.error("%s", error)
+        return 1
     print(_INSECURE, file=sys.stderr)
     # Devices first: it is the only cheap way to see that a worker contributed
     # its accelerator instead of silently falling back to CPU.
@@ -369,7 +675,7 @@ def run_master(options: argparse.Namespace) -> int:
     command = llama_cli_command(options.hf, endpoints, options.llama_args,
                                 interactive=sys.stdin.isatty())
     log.info("executando %s", " ".join(command))
-    return subprocess.run(command, check=False).returncode
+    return subprocess.run(command, check=False, env=environment).returncode
 
 
 def run_examples(_options: argparse.Namespace) -> int:
@@ -406,6 +712,25 @@ def run_speed(options: argparse.Namespace) -> int:
     return subprocess.run(command, check=False).returncode
 
 
+def run_hardware(options: argparse.Namespace) -> int:
+    """Measure synthetic CPU/iGPU peaks and effective small-model throughput.
+
+    The score is also recorded under the runtime dir so this node's own tmux
+    panel can show the result on its screen.
+    """
+    try:
+        score = run_hardware_benchmark(cache_dir=options.cache_dir)
+    except (HardwareBenchmarkError, OSError) as error:
+        log.error("%s", error)
+        return 1
+    try:
+        StateStore(options.runtime_dir).write_hardware_score(score.to_record())
+    except OSError as error:
+        log.warning("score nao gravado para o painel: %s", error)
+    print(score.to_json() if options.json else format_hardware_score(score))
+    return 0
+
+
 def _mode_config_from(options: argparse.Namespace) -> ModeConfig:
     mode = Mode.from_text(options.target)
     model = MODEL_PROFILES[options.model] if options.model else None
@@ -426,12 +751,21 @@ def _mode_controller(options: argparse.Namespace) -> ModeController:
                           health_timeout=options.health_timeout)
 
 
+def _local_node_id(machine_id_path: Path = Path("/etc/machine-id")) -> str:
+    """Return the same stable ID used by systemd's `node-%m` service argument."""
+    try:
+        machine_id = machine_id_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        machine_id = ""
+    return f"node-{machine_id or socket.gethostname()}"
+
+
 def _status_line(state: NodeState) -> str:
     try:
         address = lan_address()
     except OSError:
         address = "unavailable"
-    return (f"role={state.mode.value} | node=node-{socket.gethostname()} | "
+    return (f"role={state.mode.value} | node={_local_node_id()} | "
             f"ip={address}")
 
 
@@ -461,6 +795,9 @@ def run_mode(options: argparse.Namespace) -> int:
         _print_status(store, options.brief)
         return 0
     try:
+        if options.auto_discover:
+            _configure_direct_mode_discovery(options)
+        _set_model_cache_device(options.runtime_dir, options.usb_device)
         config = _mode_config_from(options)
         state = _mode_controller(options).apply(
             config, keep_model_cache=options.keep_model_cache)
@@ -475,8 +812,10 @@ def run_mode(options: argparse.Namespace) -> int:
 def run_become_master(options: argparse.Namespace) -> int:
     """Stop local inference roles while leaving fleet discovery available."""
     try:
+        _set_model_cache_device(options.runtime_dir, "")
         _mode_controller(options).apply(ModeConfig(Mode.IDLE))
-    except (ModeLockedError, ModeTransitionError, UnitCommandError) as error:
+    except (ModeLockedError, ModeTransitionError, UnitCommandError,
+            OSError, subprocess.CalledProcessError) as error:
         log.error("%s", error)
         return 1
     log.info("no pronto como coordenador; discovery UDP de controle permanece ativo")
@@ -579,7 +918,7 @@ def run_fleet(options: argparse.Namespace) -> int:
             return _run_fleet_bench(coordinator, options)
         if options.fleet_command == "reboot":
             return _run_fleet_reboot(coordinator, options)
-        result = coordinator.reset(_split_hosts(options.nodes))
+        result = coordinator.reset(_reset_hosts(options))
         print("nos em modo worker")
         print(f"registro: {result}")
         return 0
@@ -601,6 +940,20 @@ def _resolve_fleet_key() -> str:
     if repo_key.exists():
         return str(repo_key)
     return FLEET_KEY
+
+
+def _reset_hosts(options: argparse.Namespace) -> tuple[str, ...]:
+    if not options.auto_discover:
+        if not options.nodes:
+            raise FleetError("informe --nodes ou --auto-discover")
+        return _split_hosts(options.nodes)
+    found = discover_fleet_nodes(options.discovery_port,
+                                 options.discovery_timeout,
+                                 options.broadcast_address)
+    hosts = tuple(node.address for node in found)
+    if not hosts:
+        raise FleetError("nenhum no descoberto via UDP de controle")
+    return hosts
 
 
 def _run_fleet_nodes(options: argparse.Namespace) -> int:
@@ -808,7 +1161,8 @@ def run_bench_capacity(options: argparse.Namespace) -> int:
 
 _COMMANDS = {"worker": run_worker, "nodes": run_nodes, "master": run_master,
               "exemplos": run_examples, "bench": run_bench,
-              "velocidade": run_speed, "mode": run_mode,
+              "velocidade": run_speed, "hardware-bench": run_hardware,
+              "mode": run_mode,
               "become_master": run_become_master, "serve": run_serve,
               "fleet-agent": run_fleet_agent,
               "fleet": run_fleet, "bench-capacity": run_bench_capacity}

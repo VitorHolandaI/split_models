@@ -22,9 +22,15 @@ detect_broadcast() {
 broadcast="${SPLIT_BROADCAST:-$(detect_broadcast)}"
 model="${SPLIT_LLAMA_MODEL:-Qwen/Qwen2.5-0.5B-Instruct-GGUF}"
 
-# O download do GGUF vai para o model-cache em tmpfs, como no modo
-# supervisionado; /root/.cache estouraria no overlay de 256 MB da live ISO.
+# O download do GGUF vai para /run (RAM) por padrao. SPLIT_USB_DEVICE pode
+# selecionar uma particao USB ext4 para este master antes do download.
 export LLAMA_CACHE=/run/split-models/model-cache
+if [[ -n "${SPLIT_USB_DEVICE:-}" ]]; then
+    install -d /run/split-models
+    printf '%s\n' "$SPLIT_USB_DEVICE" > /run/split-models/model-cache-device
+else
+    rm -f /run/split-models/model-cache-device
+fi
 split-llama-model-cache
 
 printf 'master llama.cpp: broadcast=%s model=%s\n' "$broadcast" "$model"

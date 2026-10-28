@@ -12,17 +12,21 @@ from __future__ import annotations
 
 import logging
 import shutil
+import subprocess
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from .discovery import RPC_PORT
 from .health import HttpHealthProbe, TcpPortProbe, wait_until
 from .mode_state import Mode, ModeConfig, NodeState
 from .mode_store import StateStore
+from .model_cache import record_cached_model, select_cached_model
 from .server import llama_server_command
 from .units import SERVER_UNIT, WORKER_UNIT, UnitManager
 
 log = logging.getLogger("split_lm")
+_MODEL_CACHE_HELPER = Path("/usr/local/bin/split-llama-model-cache")
 
 
 class ModeTransitionError(RuntimeError):
@@ -99,13 +103,15 @@ class ModeController:
             stage = "server.stop"
             self._units.stop(SERVER_UNIT)
             stage = "server.prepare"
-            if not keep_cache:
-                self._clear_model_cache()
+            self._prepare_model_cache(config, keep_cache)
             self._store.write_command(llama_server_command(config))
             stage = "server.start"
             self._units.start(SERVER_UNIT)
             stage = "server.health"
             self._wait_health(config)
+            stage = "server.cache-record"
+            if config.model:
+                record_cached_model(self._store.model_cache_dir, config.model)
         except Exception as exc:
             raise self._rollback(config, stage, exc) from exc
         return self._record(config)
@@ -156,8 +162,16 @@ class ModeController:
         cache = self._store.model_cache_dir
         if not cache.exists():
             return
+        if _MODEL_CACHE_HELPER.exists():
+            subprocess.run([str(_MODEL_CACHE_HELPER), "--unmount"], check=True)
         for child in cache.iterdir():
             if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child)
             else:
                 child.unlink()
+
+    def _prepare_model_cache(self, config: ModeConfig, keep_cache: bool) -> None:
+        if keep_cache and config.model:
+            select_cached_model(self._store.model_cache_dir, config.model)
+            return
+        self._clear_model_cache()

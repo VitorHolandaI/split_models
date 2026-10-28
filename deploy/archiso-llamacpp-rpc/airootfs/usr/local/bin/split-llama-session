@@ -8,7 +8,8 @@ set -u
 
 printf 'Papeis: split-llama mode worker|distributed-master|replica|idle|status\n'
 printf 'Master:  split-llama mode distributed-master --model large --parallel 8 --rpc ip1:50052,ip2:50052\n'
-printf 'Replica: split-llama mode replica --model small --parallel 4\n\n'
+printf 'Replica: split-llama mode replica --model small --parallel 4\n'
+printf 'Guia:    cat /root/README-split-llama.txt   (hardware-bench, --discover, USB, frota)\n\n'
 
 journalctl -fu split-llama-worker.service -fu split-llama-server.service
 status=$?

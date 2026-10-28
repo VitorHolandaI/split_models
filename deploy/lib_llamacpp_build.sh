@@ -12,6 +12,8 @@
 
 # shellcheck source=deploy/llama-version.env
 source "$repo_root/deploy/llama-version.env"
+# shellcheck source=deploy/vkpeak-version.env
+source "$repo_root/deploy/vkpeak-version.env"
 
 # Fora dos mktemp que o trap descarta: compilar llama.cpp com todas as variantes
 # de CPU e os shaders Vulkan e caro demais para refazer a cada ISO.
@@ -20,6 +22,8 @@ llama_tree="$llama_cache/llama.cpp-$LLAMA_TAG"
 llama_tarball="$llama_cache/llama.cpp-$LLAMA_TAG.tar.gz"
 llama_destdir="$llama_cache/dest-$LLAMA_TAG"
 vulkan_toolchain_stamp="$llama_tree/build/.split-models-glslc-version"
+vkpeak_zip="$llama_cache/vkpeak-$VKPEAK_RELEASE-linux.zip"
+vkpeak_tree="$llama_cache/vkpeak-$VKPEAK_RELEASE-linux"
 
 # GGML_RPC_RDMA=OFF e obrigatorio, nao preferencia. ggml/src/ggml-rpc/
 # CMakeLists.txt:12-22 procura libibverbs NO HOST DE BUILD e liga RDMA sozinho se
@@ -67,7 +71,7 @@ _install_hint() {
 
 require_llama_build_commands() {
     local command_name
-    for command_name in cmake curl gcc g++ glslc; do
+    for command_name in cmake curl gcc g++ glslc unzip; do
         command -v "$command_name" >/dev/null || {
             printf 'comando ausente: %s\n' "$command_name" >&2
             _install_hint "cmake shaderc vulkan-headers spirv-headers" \
@@ -93,6 +97,24 @@ require_llama_build_commands() {
             exit 1
         }
     done
+}
+
+fetch_vkpeak_release() {
+    [[ -f "$vkpeak_zip" ]] || curl -fsSL -o "$vkpeak_zip" \
+        "https://github.com/nihui/vkpeak/releases/download/$VKPEAK_RELEASE/vkpeak-$VKPEAK_RELEASE-linux.zip"
+    printf '%s  %s\n' "$VKPEAK_SHA256" "$vkpeak_zip" | sha256sum -c --quiet || {
+        printf 'digest do vkpeak %s nao confere; esperado %s\n' \
+            "$VKPEAK_RELEASE" "$VKPEAK_SHA256" >&2
+        exit 1
+    }
+    [[ -x "$vkpeak_tree/vkpeak" ]] || unzip -q -o "$vkpeak_zip" -d "$llama_cache"
+}
+
+stage_vkpeak_to_destdir() {
+    fetch_vkpeak_release
+    install -Dm755 "$vkpeak_tree/vkpeak" "$llama_destdir/usr/bin/vkpeak"
+    install -Dm644 "$vkpeak_tree/LICENSE" \
+        "$llama_destdir/usr/share/licenses/vkpeak/LICENSE"
 }
 
 # O digest e conferido sempre, nao so no download: um tarball em cache corrompido
@@ -276,6 +298,7 @@ stage_variant_extras() {
     fetch_llama_source
     build_llama_binaries
     install_llama_to_destdir
+    stage_vkpeak_to_destdir
     cp -a "$llama_destdir/." "$staged_profile/airootfs/"
     append_llama_file_permissions
     write_llama_build_info

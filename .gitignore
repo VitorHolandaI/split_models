@@ -8,6 +8,10 @@ build/
 dist/
 benchmark-results/
 
+# Modelos GGUF locais: centenas de MB, nunca entram no historico
+*.gguf
+models/
+
 # Chave privada da appliance. Fica no diretorio para ser entregue a mao, nunca
 # no historico: commit de chave privada nao se desfaz, so se revoga trocando o
 # par e reconstruindo a ISO. A publica correspondente vai versionada, embutida

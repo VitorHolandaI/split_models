@@ -11,7 +11,7 @@ import fcntl
 import json
 import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import TextIO
@@ -27,6 +27,9 @@ LOCK_FILE = "mode.lock"
 # RAM back when the node returns to worker.
 MODEL_CACHE = "model-cache"
 RPC_CACHE = "rpc-cache"
+# Ultimo hardware-bench deste boot: o painel da maquina (barra do tmux) le
+# este arquivo para mostrar o resumo na propria tela, sem SSH.
+HARDWARE_SCORE_FILE = "hardware-score.json"
 
 
 class ModeLockedError(RuntimeError):
@@ -106,6 +109,14 @@ class StateStore:
     @property
     def rpc_cache_dir(self) -> Path:
         return self._root / RPC_CACHE
+
+    @property
+    def hardware_score_path(self) -> Path:
+        return self._root / HARDWARE_SCORE_FILE
+
+    def write_hardware_score(self, record: Mapping[str, object]) -> None:
+        """Record the last hardware-bench so the node's own panel can show it."""
+        _atomic_write(self.hardware_score_path, json.dumps(dict(record)))
 
     def lock(self) -> ModeLock:
         return ModeLock(self._root / LOCK_FILE)

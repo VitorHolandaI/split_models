@@ -3,5 +3,23 @@ set -u
 
 # Sobrescreve o script da imagem estavel: o papel agora vem do estado gravado
 # pelo controlador de modos, nao mais dos arquivos soltos role/node-id que a
-# sessao tmux escrevia.
-exec /usr/local/bin/split-llama mode status --brief
+# sessao tmux escrevia. Se `split-llama hardware-bench` ja rodou neste boot,
+# o resumo do hardware aparece junto na barra, na propria tela da maquina.
+
+split_llama="${SPLIT_LLAMA_BIN:-/usr/local/bin/split-llama}"
+runtime="${SPLIT_MODELS_RUNTIME:-/run/split-models}"
+line="$("$split_llama" mode status --brief)"
+score="$runtime/hardware-score.json"
+if [[ -f "$score" ]]; then
+    summary="$(/usr/bin/python3 -c '
+import json, sys
+record = json.load(open(sys.argv[1]))
+if record["device"] == "sem-vulkan" or record["vulkan_tokens_per_second"] <= 0:
+    print("| backend=CPU | CPU {:.2f} tok/s".format(record["cpu_tokens_per_second"]))
+else:
+    print("| backend=Vulkan | iGPU {:.2f} TOPS | Vulkan {:.2f} tok/s".format(
+        record["int8_tops"], record["vulkan_tokens_per_second"]))
+' "$score")"
+    line="$line $summary"
+fi
+printf '%s\n' "$line"

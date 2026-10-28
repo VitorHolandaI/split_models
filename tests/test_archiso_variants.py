@@ -1,3 +1,4 @@
+import os
 import subprocess
 import tempfile
 import unittest
@@ -200,6 +201,53 @@ class LlamaApplianceOverlayTest(unittest.TestCase):
         self.assertIn("LAN isolada", guide)
         self.assertIn("executa codigo", guide)
 
+    def test_in_iso_guide_covers_the_planning_commands(self):
+        guide = self.overlay_file("root/README-split-llama.txt")
+        session = self.overlay_file("usr/local/bin/split-llama-session")
+
+        # O guia embarcado e a referencia de ajuda dentro da ISO: cada comando
+        # novo do planejamento tem bloco proprio, e a sessao aponta para ele.
+        self.assertIn("hardware-bench", guide)
+        self.assertIn("--machines", guide)
+        self.assertIn("model-size-gb", guide)
+        self.assertIn("gpt-oss-20b-GGUF:MXFP4", guide)
+        self.assertIn("USB", guide)
+        self.assertIn("README-split-llama.txt", session)
+
+    def test_machines_own_panel_shows_the_last_hardware_score(self):
+        status = self.overlay_file("usr/local/bin/split-models-status")
+
+        # O hardware-bench grava o score em /run/split-models e a barra do
+        # tmux da propria maquina mostra o resumo, sem precisar de SSH.
+        self.assertIn("hardware-score.json", status)
+        self.assertIn("int8_tops", status)
+        self.assertIn("backend=CPU", status)
+        self.assertIn("backend=Vulkan", status)
+        self.assertIn("mode status --brief", status)
+
+    def test_machines_own_panel_executes_the_cpu_summary(self):
+        status = OVERLAY / "airootfs/usr/local/bin/split-models-status"
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "run"
+            runtime.mkdir()
+            (runtime / "hardware-score.json").write_text(
+                '{"device":"sem-vulkan","int8_tops":0,'
+                '"cpu_tokens_per_second":31.279,'
+                '"vulkan_tokens_per_second":0}', encoding="utf-8")
+            split_llama = Path(temporary) / "split-llama"
+            split_llama.write_text(
+                "#!/usr/bin/bash\nprintf 'role=worker | node=node-test | ip=127.0.0.1\\n'\n",
+                encoding="utf-8")
+            split_llama.chmod(0o755)
+
+            result = subprocess.run(
+                ["bash", status], check=False, capture_output=True, text=True,
+                env={**os.environ, "SPLIT_LLAMA_BIN": str(split_llama),
+                     "SPLIT_MODELS_RUNTIME": str(runtime)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("backend=CPU | CPU 31.28 tok/s", result.stdout)
+
     def test_master_shortcut_discovers_instead_of_hardcoding_addresses(self):
         shortcut = self.overlay_file("root/split-llama-master.sh")
 
@@ -239,22 +287,126 @@ class LlamaApplianceOverlayTest(unittest.TestCase):
         self.assertNotIn("split-models-python", wrapper)
         self.assertIn("stage_python_environment() { :; }", llama_build)
         self.assertNotIn("nvidia-utils", packages)
+        self.assertIn("7zip", packages)
 
-    def test_model_cache_lands_somewhere_a_model_actually_fits(self):
-        """O overlay de escrita da live ISO e um tmpfs de 256 MB.
-
-        Sem LLAMA_CACHE o llama-server baixa em /root/.cache/llama.cpp, que
-        fica nesse overlay, e ate o modelo padrao de 0.49 GB estoura.
-        """
+    def test_model_cache_defaults_to_runtime_ram_and_can_use_selected_usb(self):
+        """O cache usa /run por padrao e USB somente quando selecionado."""
         server_unit = self.overlay_file(
             "etc/systemd/system/split-llama-server.service")
         cache_setup = self.overlay_file("usr/local/bin/split-llama-model-cache")
 
         self.assertIn("LLAMA_CACHE=/run/split-models/model-cache", server_unit)
         self.assertIn("split-llama-model-cache", server_unit)
-        # /run padrao e metade da RAM, o que cortaria o modelo maximo pela
-        # metade sem motivo: o cache ganha tmpfs proprio e dimensionado.
-        self.assertIn("mount -t tmpfs -o size=75%", cache_setup)
+        self.assertIn("model-cache temporario em RAM", cache_setup)
+        self.assertNotIn("mount -t tmpfs", cache_setup)
+
+    def test_model_cache_validates_the_selected_usb_ext4_device(self):
+        cache_setup = self.overlay_file("usr/local/bin/split-llama-model-cache")
+
+        # O TRAN vem no disco pai: a particao e casada ao PKNAME antes de
+        # decidir se o dispositivo e USB.
+        self.assertIn("lsblk -rpn -o NAME,FSTYPE,TYPE,PKNAME \"$requested\"",
+                      cache_setup)
+        self.assertIn('"$filesystem" == ext4', cache_setup)
+        self.assertIn('"$transport" == usb', cache_setup)
+        self.assertIn("mount -t ext4 -o rw,noatime", cache_setup)
+        self.assertIn("AVISO", cache_setup)
+
+    def test_model_cache_accepts_absolute_pkname_from_lsblk(self):
+        cache_setup = OVERLAY / "airootfs/usr/local/bin/split-llama-model-cache"
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "run"
+            runtime.mkdir()
+            (runtime / "model-cache-device").write_text(
+                "/dev/sda1\n", encoding="utf-8")
+            shell = f"""
+lsblk() {{
+    if [[ "$*" == *NAME,FSTYPE,TYPE,PKNAME* ]]; then
+        printf '/dev/sda1 ext4 part /dev/sda\n'
+    else
+        printf 'usb\n'
+    fi
+}}
+install() {{ :; }}
+findmnt() {{
+    [[ "$*" == *--target* ]] && {{ printf 'rootfs\n'; return 0; }}
+    return 1
+}}
+umount() {{ printf 'UNEXPECTED UMOUNT %s\n' "$*"; return 1; }}
+mount() {{ printf 'MOUNT %s\n' "$*"; }}
+source {cache_setup}
+"""
+
+            result = subprocess.run(
+                ["bash", "-c", shell], check=False, capture_output=True,
+                text=True, env={**os.environ, "SPLIT_MODELS_RUNTIME": str(runtime)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("MOUNT -t ext4 -o rw,noatime /dev/sda1", result.stdout)
+        self.assertNotIn("UNEXPECTED UMOUNT", result.stdout)
+
+    def test_model_cache_uses_runtime_ram_without_usb(self):
+        cache_setup = OVERLAY / "airootfs/usr/local/bin/split-llama-model-cache"
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "run"
+            runtime.mkdir()
+            shell = f"""
+findmnt() {{ return 1; }}
+mount() {{ printf 'UNEXPECTED MOUNT %s\\n' "$*"; return 1; }}
+source {cache_setup}
+"""
+            result = subprocess.run(
+                ["bash", "-c", shell], check=False, capture_output=True,
+                text=True, env={**os.environ, "SPLIT_MODELS_RUNTIME": str(runtime)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("model-cache temporario em RAM", result.stdout)
+        self.assertNotIn("UNEXPECTED MOUNT", result.stdout)
+
+    def test_model_cache_unmounts_usb_before_returning_to_runtime_ram(self):
+        cache_setup = OVERLAY / "airootfs/usr/local/bin/split-llama-model-cache"
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "run"
+            runtime.mkdir()
+            shell = f"""
+findmnt() {{ printf '/dev/sda1\\n'; }}
+umount() {{ printf 'UMOUNT %s\\n' "$*"; }}
+source {cache_setup}
+"""
+            result = subprocess.run(
+                ["bash", "-c", shell], check=False, capture_output=True,
+                text=True, env={**os.environ, "SPLIT_MODELS_RUNTIME": str(runtime)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("UMOUNT", result.stdout)
+        self.assertIn("model-cache temporario em RAM", result.stdout)
+
+    def test_model_cache_honors_the_selected_usb_partition(self):
+        cache_setup = OVERLAY / "airootfs/usr/local/bin/split-llama-model-cache"
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "run"
+            runtime.mkdir()
+            (runtime / "model-cache-device").write_text(
+                "/dev/sda1\n", encoding="utf-8")
+            shell = f"""
+lsblk() {{
+    if [[ "$*" == *NAME,FSTYPE,TYPE,PKNAME* ]]; then
+        printf '/dev/sda1 ext4 part /dev/sda\\n'
+    else
+        printf 'usb\\n'
+    fi
+}}
+install() {{ :; }}
+findmnt() {{ return 1; }}
+mount() {{ printf 'MOUNT %s\\n' "$*"; }}
+source {cache_setup}
+"""
+            result = subprocess.run(
+                ["bash", "-c", shell], check=False, capture_output=True,
+                text=True, env={**os.environ, "SPLIT_MODELS_RUNTIME": str(runtime)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("MOUNT -t ext4 -o rw,noatime /dev/sda1", result.stdout)
 
     def test_caches_do_modelo_e_do_rpc_ficam_separados(self):
         worker_unit = self.overlay_file(
@@ -333,7 +485,7 @@ class SupervisedUnitsTest(unittest.TestCase):
 
         # A barra do tmux deixou de ler os arquivos soltos role/node-id que a
         # sessao escrevia; a fonte oficial e o estado do controlador.
-        self.assertIn("split-llama mode status --brief", status)
+        self.assertIn("mode status --brief", status)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ class InventorySectionsTest(unittest.TestCase):
         for section in ("hostname", "ip", "memtotal", "status", "build",
                         "devices"):
             self.assertIn(f"SECTION {section}", script)
+        self.assertIn("tr '\\n' ' '; printf '\\n'", script)
 
 
 class InventoryParseTest(unittest.TestCase):

@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from split_lm.llama_rpc.cli import _local_node_id
 from split_lm.llama_rpc.controller import ModeController, ModeTransitionError
 from split_lm.llama_rpc.mode_state import (
     MODEL_PROFILES, Mode, ModeConfig, NodeState)
@@ -9,6 +10,15 @@ from split_lm.llama_rpc.mode_store import ModeLockedError, StateStore
 from split_lm.llama_rpc.server import llama_server_command
 from split_lm.llama_rpc.units import (
     SERVER_UNIT, WORKER_UNIT, UnitCommandError)
+
+
+class NodeIdentityTest(unittest.TestCase):
+    def test_status_node_id_matches_systemd_machine_id(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            machine_id = Path(temporary) / "machine-id"
+            machine_id.write_text("abcd1234\n", encoding="utf-8")
+
+            self.assertEqual(_local_node_id(machine_id), "node-abcd1234")
 
 
 class FakeUnitManager:
@@ -136,6 +146,21 @@ class IdleTransitionTest(ModeControllerTestBase):
 
 
 class MasterTransitionTest(ModeControllerTestBase):
+    def test_hot_cache_removes_another_model_before_master_load(self):
+        cache = self.store.model_cache_dir
+        cache.mkdir(parents=True)
+        old_model = cache / "small.gguf"
+        old_model.write_text("weights", encoding="utf-8")
+        (cache / ".selected-model").write_text(
+            MODEL_PROFILES["small"], encoding="utf-8")
+
+        self.controller.apply(self.master_config(), keep_model_cache=True)
+
+        self.assertFalse(old_model.exists())
+        self.assertEqual(
+            (cache / ".selected-model").read_text(encoding="utf-8"),
+            MODEL_PROFILES["large"])
+
     def test_master_transition_follows_the_planned_order(self):
         state = self.controller.apply(self.master_config())
 
@@ -171,6 +196,17 @@ class MasterTransitionTest(ModeControllerTestBase):
 
 
 class ReplicaTransitionTest(ModeControllerTestBase):
+    def test_hot_cache_preserves_the_same_model_after_a_server_run(self):
+        config = self.replica_config()
+        self.controller.apply(config)
+        downloaded = self.store.model_cache_dir / "small.gguf"
+        downloaded.parent.mkdir(parents=True, exist_ok=True)
+        downloaded.write_text("weights", encoding="utf-8")
+
+        self.controller.apply(config, keep_model_cache=True)
+
+        self.assertTrue(downloaded.exists())
+
     def test_replica_serves_without_rpc(self):
         state = self.controller.apply(self.replica_config())
 
