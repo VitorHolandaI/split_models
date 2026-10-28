@@ -303,6 +303,8 @@ throughput.
 
 [![Replicated fleet bench on 12 nodes](docs/evidence/2026-08-21-fleet-bench-12-nodes/replicated-users-2-32.jpg)](docs/evidence/2026-08-21-fleet-bench-12-nodes/README.md)
 
+[![Lab machines running the benchmark](docs/evidence/2026-08-21-fleet-bench-12-nodes/lab-cluster.jpg)](docs/evidence/2026-08-21-fleet-bench-12-nodes/README.md)
+
 More in [`docs/evidence/`](docs/evidence/README.md).
 
 ## Documentation
