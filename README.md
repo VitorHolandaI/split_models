@@ -293,9 +293,22 @@ generation, capacity profiles, discovery protocols, ISO staging, and the
 PyTorch split cluster — all against named fakes, no network or hardware
 required.
 
+## Execution evidence
+
+Cropped photos from real runs using this repository's code, before the USB
+cache policy. The `tok/s` shown is the per-request average, not total fleet
+throughput.
+
+[![Split BFLOAT16 run](docs/evidence/2026-07-31-split-bfloat16/generation-context-1024.jpg)](docs/evidence/2026-07-31-split-bfloat16/README.md)
+
+[![Replicated fleet bench on 12 nodes](docs/evidence/2026-08-21-fleet-bench-12-nodes/replicated-users-2-32.jpg)](docs/evidence/2026-08-21-fleet-bench-12-nodes/README.md)
+
+More in [`docs/evidence/`](docs/evidence/README.md).
+
 ## Documentation
 
 - `README-FLEET-BENCH.md` — operator manual for the llama.cpp appliance
+- `docs/evidence/README.md` — cropped photos and measured numbers from real runs
 - `docs/protocol.md` — PyTorch split cluster wire protocol
 - `docs/heterogeneous-split.md` — heterogeneous worker memory planning
 - `docs/memory-bandwidth-roof.md` — CPU inference performance model
