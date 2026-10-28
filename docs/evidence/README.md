@@ -14,11 +14,15 @@ o modelo era baixado para `/run` (tmpfs) ou já estava em cache local.
 [Pasta](2026-07-31-split-bfloat16/) com duas fotos do pipeline vertical
 (PyTorch), anterior à variante llama.cpp RPC.
 
+[![Métricas do split BFLOAT16 com 0.26 tok/s](2026-07-31-split-bfloat16/generation-context-1024.jpg)](2026-07-31-split-bfloat16/README.md)
+
 ## 2026-08-21 — fleet bench em 12 nós
 
 [Pasta](2026-08-21-fleet-bench-12-nodes/) com duas fotos do
 `split-llama fleet bench` nos cenários distribuído e replicado, além da foto do
 laboratório.
+
+[![Bench replicado com 2 a 32 usuários](2026-08-21-fleet-bench-12-nodes/replicated-users-2-32.jpg)](2026-08-21-fleet-bench-12-nodes/README.md)
 
 ## Limitações
 

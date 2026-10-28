@@ -11,6 +11,8 @@ oficiais do `README-FLEET-BENCH.md`.
 
 ## `distributed-users-2-4-8.jpg`
 
+![Bench distribuído com 2, 4 e 8 usuários](distributed-users-2-4-8.jpg)
+
 ```text
 split-llama fleet bench --scenario distributed --model small --profile users-2k --auto-discover
 ```
@@ -22,6 +24,8 @@ split-llama fleet bench --scenario distributed --model small --profile users-2k 
 | 8 | 24 | 0 | 4.15 |
 
 ## `replicated-users-2-32.jpg`
+
+![Bench replicado com 2, 4, 8, 16 e 32 usuários](replicated-users-2-32.jpg)
 
 ```text
 split-llama fleet bench --scenario replicated --model small --profile users-2k --auto-discover
@@ -39,6 +43,8 @@ Resumo gravado em `/run/split-models/benchmark-results/capacity-summary.csv`
 (tmpfs, não persistido).
 
 ## `lab-cluster.jpg`
+
+![Laboratório com a frota de monitores rodando o benchmark](lab-cluster.jpg)
 
 Foto do laboratório onde a frota física estava montada. Serve como contexto
 das execuções; os terminais abertos nos monitores mostram a mesma sessão de
